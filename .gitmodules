@@ -1,0 +1,3 @@
+[submodule "kobe-rcpsp"]
+	path = kobe-rcpsp
+	url = https://github.com/ptal/kobe-rcpsp.git
