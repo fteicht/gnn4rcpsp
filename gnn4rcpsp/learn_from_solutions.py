@@ -1,15 +1,10 @@
 import torch
 import torch.nn.functional as F
-from torch.utils.tensorboard._convert_np import make_np
 from torch.utils.tensorboard import SummaryWriter
-from torch_geometric.data import Data, DataLoader, DataListLoader
-from torch_geometric.utils import to_networkx
-from torch_geometric.nn import TransformerConv, DenseGCNConv, Sequential
+from torch_geometric.data import DataLoader
+from torch_geometric.nn import Sequential
 
-import matplotlib.pyplot as plt
-import networkx as nx
 import numpy as np
-from math import sqrt
 import os
 
 from tqdm import tqdm
@@ -108,9 +103,9 @@ def train(train_loader, model, optimizer):
             out = model(data)
             data.out = out
             # TODO: is there a cleaner way to do this?
-            data.__slices__['out'] = data.__slices__['x']
-            data.__cat_dims__['out'] = data.__cat_dims__['x']
-            data.__cumsum__['out'] = data.__cumsum__['x']
+            # data.__slices__['out'] = data.__slices__['x']
+            # data.__cat_dims__['out'] = data.__cat_dims__['x']
+            # data.__cumsum__['out'] = data.__cumsum__['x']
     #         data.cpu()
             
             if COMPUTE_DEBUG:
@@ -176,6 +171,5 @@ if __name__ == "__main__":
     run_id = timestamp = datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S')
     print(f"Run ID: {run_id}")
     writer = SummaryWriter(f's3://iooda-gnn4rcpsp-bucket/tensorboard_logs/{run_id}')
-    # writer = SummaryWriter(f's3://iooda-gnn4rcpsp-bucket/xai_experiments/no_makespan')
     
     train(train_loader=train_loader, model=model, optimizer=optimizer)
