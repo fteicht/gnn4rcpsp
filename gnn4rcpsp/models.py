@@ -1,4 +1,4 @@
-from .data import Graph
+from graph import Graph
 import torch
 from torch_geometric.nn import TransformerConv, GINEConv, Sequential
 from math import sqrt
