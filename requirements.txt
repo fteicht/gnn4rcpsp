@@ -17,12 +17,13 @@ nvidia-nvjpeg-cu11
 torch==1.10.2+cu113 -f https://download.pytorch.org/whl/cu113/torch_stable.html
 torchvision==0.11.3+cu113 -f https://download.pytorch.org/whl/cu113/torch_stable.html
 torchaudio==0.10.2+cu113 -f https://download.pytorch.org/whl/cu113/torch_stable.html
-torch-scatter -f https://data.pyg.org/whl/torch-1.10.0+cu113.html
-torch-sparse -f https://data.pyg.org/whl/torch-1.10.0+cu113.html
-torch-cluster -f https://data.pyg.org/whl/torch-1.10.0+cu113.html
-torch-spline-conv -f https://data.pyg.org/whl/torch-1.10.0+cu113.html
-torch-geometric -f https://data.pyg.org/whl/torch-1.10.0+cu113.html
+torch-scatter
+torch-sparse
+torch-cluster
+torch-spline-conv
+torch-geometric
 tensorboard
+boto3
 simplejson
 deap
 mip
