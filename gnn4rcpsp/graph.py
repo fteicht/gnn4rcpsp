@@ -129,6 +129,8 @@ class Graph:
             con=con.view(-1),
             con_shape=con.shape,
             reference_makespan=reference_makespan,
+            solution_starts=torch.tensor([v['start_time'] for v in solution.rcpsp_schedule.values()]) if solution is not None else torch.zeros(nb_tasks),
+            solution_makespan=solution_makespan if solution_makespan is not None else -1
         )
         # self._data.diameter = nx.algorithms.distance_measures.diameter(to_networkx(self._data))
 
@@ -197,19 +199,21 @@ def load_data(kobe_rcpsp_directory, solution_file):
             for f in tqdm(os.listdir(os.path.join(kobe_rcpsp_directory, d))):
                 optima = pd.read_csv(os.path.join(kobe_rcpsp_directory, d + '/optimum/optimum.csv'), index_col='problem').T
                 bench_file = os.path.basename(f)
-                if os.path.splitext(bench_file)[1] == '.sm' and os.path.splitext(bench_file)[0] in solutions:
+                if os.path.splitext(bench_file)[1] == '.sm' and bench_file in solutions:
                     optimum = optima[f]['optimum']
                     reference_makespan = [max(map(int, filter(lambda x: x, optimum.split('..'))))] if type(optimum) is str else [optimum]
                     rcpsp_model = parse_file(os.path.join(kobe_rcpsp_directory, d + '/' + f))
                     g = Graph()
                     g.create_from_data(rcpsp_model=rcpsp_model,
                                        reference_makespan=reference_makespan,
-                                       solution=RCPSPSolution(rcpsp_model, rcpsp_schedule=solutions[os.path.splitext(bench_file)[0]]['sol']['rcpsp_schedule']),
-                                       solution_makespan=solutions[os.path.splitext(bench_file)[0]]['fit']['makespan'])
+                                       solution=RCPSPSolution(rcpsp_model,
+                                                              rcpsp_schedule={int(t) : s for t, s in solutions[bench_file]['sol']['rcpsp_schedule'].items()}),
+                                       solution_makespan=solutions[bench_file]['fit']['makespan'])
                     data_list.append(g._data)
                     rcpsp_model_list.append(g.rcpsp_model)
                     optima_list.append(optimum)
 
+    print('Processed {} benchmarks'.format(len(data_list)))
     torch.save(data_list, './data_list.tch')
     torch.save(rcpsp_model_list, './rcpsp_model_list.tch')
     torch.save(optima_list, './optima_list.tch')
@@ -217,4 +221,8 @@ def load_data(kobe_rcpsp_directory, solution_file):
     return data_list
 
 if __name__ == "__main__":
-    load_data()
+    root_dir = os.path.dirname(os.path.dirname(__file__))
+    kobe_rcpsp_dir = os.path.join(root_dir, 'kobe-rcpsp/data/rcpsp')
+    solutions_dir = os.path.join(root_dir, 'cp_solutions')
+    load_data(kobe_rcpsp_directory=kobe_rcpsp_dir,
+              solution_file=os.path.join(solutions_dir, 'postpro_benchmark_merged_single_modes.json'))
