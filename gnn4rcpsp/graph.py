@@ -123,13 +123,14 @@ class Graph:
             t2t=_t2t_.view(-1), # flatten to enable concatenation in minibatches
             dur=_dur_,
             r2t=_r2t_.view(-1), # transpose to enable concatenation in minibatches
-            rc=torch.tensor(list(rcpsp_model.resources.values())),
+            rc=torch.tensor(list(rcpsp_model.resources.values()), dtype=torch.float32),
             sources=sources,
             sinks=sinks,
             con=con.view(-1),
             con_shape=con.shape,
             reference_makespan=reference_makespan,
-            solution_starts=torch.tensor([v['start_time'] for v in solution.rcpsp_schedule.values()]) if solution is not None else torch.zeros(nb_tasks),
+            solution_starts=torch.tensor([v['start_time'] for v in solution.rcpsp_schedule.values()], dtype=torch.float32)
+                                         if solution is not None else torch.zeros(nb_tasks, dtype=torch.float32),
             solution_makespan=solution_makespan if solution_makespan is not None else -1
         )
         # self._data.diameter = nx.algorithms.distance_measures.diameter(to_networkx(self._data))
