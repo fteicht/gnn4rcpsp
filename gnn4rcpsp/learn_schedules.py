@@ -9,6 +9,7 @@ import numpy as np
 import os
 
 from tqdm import tqdm
+import datetime
 
 from graph import load_data
 from models import ResTransformer, ResGINE
@@ -102,7 +103,7 @@ def check_solution(data):
     return total_violations
 
 
-def train(train_loader, model, optimizer, device):
+def train(train_loader, model, optimizer, device, writer):
     model.train()
     NUM_EPOCHS = 1000
     step = 0
@@ -185,7 +186,6 @@ def train(train_loader, model, optimizer, device):
 
         writer.flush()
 
-import datetime
 
 if __name__ == "__main__":
     
@@ -211,4 +211,4 @@ if __name__ == "__main__":
     writer = SummaryWriter(f's3://iooda-gnn4rcpsp-bucket/tensorboard_logs/{run_id}')
     
     torch.save(train_list, './train_list.tch')
-    train(train_loader=train_loader, model=model, optimizer=optimizer, device=device)
+    train(train_loader=train_loader, model=model, optimizer=optimizer, device=device, writer=writer)
