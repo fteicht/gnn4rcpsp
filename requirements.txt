@@ -24,6 +24,8 @@ torch-spline-conv
 torch-geometric
 tensorboard
 boto3
+nlopt
+ortools
 simplejson
 deap
 mip
