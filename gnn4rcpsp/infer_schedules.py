@@ -1,9 +1,12 @@
 import datetime
+from pickletools import optimize
 import numpy as np
+from sniffio import current_async_library
 import torch
 from torch.utils.tensorboard import SummaryWriter
 from torch_geometric.data import DataLoader
 from tqdm import tqdm
+from time import perf_counter
 
 import nlopt
 from ortools.sat.python import cp_model
@@ -11,6 +14,8 @@ from ortools.sat.python import cp_model
 from learn_schedules import check_solution, compute_loss
 
 from models import ResTransformer, ResGINE
+
+CPSAT_TIME_LIMIT = 600  # 10 mn
 
 
 def make_feasible_nlopt(data):
@@ -116,6 +121,14 @@ def make_feasible_cpsat(data):
     data_batch = data
     # Iterate over batch elements for simplicity
     # TODO: vectorize?
+    cpsat_result = {
+        'feasibility_timing': [],
+        'feasibility_rel_makespan_cor': [],
+        'feasibility_rel_makespan_ref': [],
+        'optimization_timing': [],
+        'optimization_rel_makespan_cor': [],
+        'optimization_rel_makespan_ref': [],
+    }
     data_list = data_batch.to_data_list()
     for data in data_list:
         
@@ -128,7 +141,7 @@ def make_feasible_cpsat(data):
             data.reference_makespan
         )
         xorig = np.around(data.out[len(rc):,0].cpu().detach().numpy(), decimals=0).astype(int)
-        
+            
         model = cp_model.CpModel()
         horizon = int(max(xorig + dur) * 1.2)
         starts = [model.NewIntVar(0, horizon - 1, 'start_task[{}]'.format(i)) for i in range(len(dur))]
@@ -152,43 +165,69 @@ def make_feasible_cpsat(data):
                                 int(rc[r]))
             
         model.AddMaxEquality(makespan, ends)
-        model.Add(makespan <= horizon)
         
+        # First we search for a feasible solution
         solver = cp_model.CpSolver()
-        model._CpModel__model.solution_hint.vars.extend(list(range(len(dur))))
-        model._CpModel__model.solution_hint.values.extend(xorig.tolist())
-        
+        solver.parameters.max_time_in_seconds = CPSAT_TIME_LIMIT
+        xorig_list = xorig.tolist()
+        for i, x in enumerate(xorig_list):
+            model.AddHint(starts[i], x)
+        # model._CpModel__model.solution_hint.vars.extend(list(range(len(dur))))
+        # model._CpModel__model.solution_hint.values.extend(xorig.tolist())
+        cur_time = perf_counter()
         status = solver.Solve(model)
+        
         if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
-            print('Solution found with relative makespan = {}, {}'.format(
-                solver.Value(makespan) / max(xorig + dur),
-                solver.Value(makespan) / max(ref_makespan)))
+            print('Found feasible solution')
+            feasible_solution = [solver.Value(s) for s in starts]
+            cpsat_result['feasibility_timing'].append(perf_counter() - cur_time)
+            cpsat_result['feasibility_rel_makespan_cor'].append(solver.Value(makespan) / max(xorig + dur))
+            cpsat_result['feasibility_rel_makespan_ref'].append(solver.Value(makespan) / max(ref_makespan))
         elif status == cp_model.INFEASIBLE:
-            print('Infeasible problem.')
+            cpsat_result['feasibility_timing'].append(-1)
+            cpsat_result['feasibility_rel_makespan_cor'].append(-1)
+            cpsat_result['feasibility_rel_makespan_ref'].append(-1)
+            continue
         elif status == cp_model.MODEL_INVALID:
-            print('Invalid model.')
-        elif status == cp_model.UNKNOWN:
-            print('Unknown status.')
-        else:
-            print('No solution found.')
+            raise RuntimeError('Invalid CPSAT model.')
+                
+        # Second we search for an optimal solution
+        model.Minimize(makespan)
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = CPSAT_TIME_LIMIT
+        model.ClearHints()
+        for i, x in enumerate(feasible_solution):
+            model.AddHint(starts[i], x)
+        cur_time = perf_counter()
+        status = solver.Solve(model)
+        
+        if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
+            print('Found optimal solution')
+            cpsat_result['optimization_timing'].append(perf_counter() - cur_time)
+            cpsat_result['optimization_rel_makespan_cor'].append(solver.Value(makespan) / max(xorig + dur))
+            cpsat_result['optimization_rel_makespan_ref'].append(solver.Value(makespan) / max(ref_makespan))
+        elif status == cp_model.INFEASIBLE:
+            cpsat_result['optimization_timing'].append(-1)
+            cpsat_result['optimization_rel_makespan_cor'].append(-1)
+            cpsat_result['optimization_rel_makespan_ref'].append(-1)
+            continue
+        elif status == cp_model.MODEL_INVALID:
+            raise RuntimeError('Invalid CPSAT model.')
+    
+    for k in cpsat_result:
+        cpsat_result[k] = np.mean(cpsat_result[k])
+        
+    return cpsat_result
 
 
 def test(test_loader, model, device, writer):
     model.eval()
     
     for batch_idx, data in enumerate(tqdm(test_loader)):
-        batch_violations = {
-            'all_positive_per': [],
-            'all_positive_mag': [],
-            'precedence_per': [],
-            'precedence_mag': [],
-            'resource_per': [],
-            'resource_mag': [],
-            'makespan': [],
-        }
-        
+        cur_time = perf_counter()
         data.to(device)
         out = model(data)
+        inference_time = (perf_counter() - cur_time) / float(data.num_graphs)
         data.out = out
         # TODO: is there a cleaner way to do this?
         data._slice_dict['out'] = data._slice_dict['x']
@@ -197,12 +236,7 @@ def test(test_loader, model, device, writer):
         loss = compute_loss(data=data, device=device)
         writer.add_scalar('loss', loss.item(), batch_idx)
         
-        violations = check_solution(data)
-        for k, v in violations.items():
-            batch_violations[k].append(v)
-        
-        for k, v in batch_violations.items():
-            batch_violations[k] = np.mean(batch_violations[k])
+        batch_violations = check_solution(data)
         writer.add_scalar('all_positive_per', batch_violations['all_positive_per'], batch_idx)
         writer.add_scalar('all_positive_mag', batch_violations['all_positive_mag'], batch_idx)
         writer.add_scalar('precedence_per', batch_violations['precedence_per'], batch_idx)
@@ -211,7 +245,15 @@ def test(test_loader, model, device, writer):
         writer.add_scalar('resource_mag', batch_violations['resource_mag'], batch_idx)
         writer.add_scalar('makespan', batch_violations['makespan'], batch_idx)
         
-        make_feasible_cpsat(data)
+        rel_makespan = make_feasible_cpsat(data)
+        
+        writer.add_scalar('inference_time', inference_time, batch_idx)
+        writer.add_scalar('feasibility_timing', rel_makespan['feasibility_timing'], batch_idx)
+        writer.add_scalar('feasibility_rel_makespan_cor', rel_makespan['feasibility_rel_makespan_cor'], batch_idx)
+        writer.add_scalar('feasibility_rel_makespan_ref', rel_makespan['feasibility_rel_makespan_ref'], batch_idx)
+        writer.add_scalar('optimization_timing', rel_makespan['optimization_timing'], batch_idx)
+        writer.add_scalar('optimization_rel_makespan_cor', rel_makespan['optimization_rel_makespan_cor'], batch_idx)
+        writer.add_scalar('optimization_rel_makespan_ref', rel_makespan['optimization_rel_makespan_ref'], batch_idx)
     
         writer.flush()
 
