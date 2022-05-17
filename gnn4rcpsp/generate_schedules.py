@@ -36,18 +36,14 @@ def solve_with_cpsat(data_list, device, outfile):
     
     for batch_idx, data_batch in enumerate(data_loader):
         
-        if bench_id <= 25:
-            bench_id += 1
-            continue
-        
-        print('Solving bench {}/{} ...'.format(
-            bench_id,
-            len(data_list)
-        ))
-        cur_time = perf_counter()
         data_batch.to(device)
         
         for data in data_batch.to_data_list():
+            
+            print('Solving bench {}/{} ...'.format(
+                bench_id,
+                len(data_list) - 1
+            ))
             
             t2t, dur, r2t, rc, con, ref_makespan = (
                 data.t2t.view(len(data.dur), -1).data.cpu().detach().numpy(),
@@ -91,17 +87,17 @@ def solve_with_cpsat(data_list, device, outfile):
             if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
                 print('Found optimal solution for bench {}/{} in {} s.'.format(
                     bench_id,
-                    len(data_list),
+                    len(data_list) - 1,
                     perf_counter() - start_time))
             elif status == cp_model.INFEASIBLE:
                 print('Could not find a feasible solution for bench {}/{}'.format(
                     bench_id,
-                    len(data_list)
+                    len(data_list) - 1
                 ))
             elif status == cp_model.MODEL_INVALID:
                 raise RuntimeError('Invalid CPSAT model for bench {}/{}'.format(
                     bench_id,
-                    len(data_list)
+                    len(data_list) - 1
                 ))
             
             bench_id += 1
