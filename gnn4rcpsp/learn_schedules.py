@@ -194,7 +194,7 @@ if __name__ == "__main__":
         kobe_rcpsp_dir = os.path.join(root_dir, 'kobe-rcpsp/data/rcpsp')
         solutions_dir = os.path.join(root_dir, 'cp_solutions')
         load_data(kobe_rcpsp_directory=kobe_rcpsp_dir,
-                solution_file=os.path.join(solutions_dir, 'postpro_benchmark_merged_single_modes.json'))
+                solution_file=os.path.join(solutions_dir, 'cpsat_solutions.json'))
     
     data_list = torch.load('data_list.tch')
     train_list = random.sample(range(len(data_list)), int(0.8 * len(data_list)))
