@@ -208,7 +208,8 @@ if __name__ == "__main__":
     # optimizer = torch.optim.SGD(model.parameters(), lr=1e-0)#, weight_decay=5e-4)
     run_id = timestamp = datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S')
     print(f"Run ID: {run_id}")
-    writer = SummaryWriter(f's3://iooda-gnn4rcpsp-bucket/tensorboard_logs/{run_id}')
+    # writer = SummaryWriter(f's3://iooda-gnn4rcpsp-bucket/tensorboard_logs/{run_id}')
+    writer = SummaryWriter(f'../tensorboard_logs/{run_id}')
     
     torch.save(train_list, './train_list.tch')
     train(train_loader=train_loader, model=model, optimizer=optimizer, device=device, writer=writer)
