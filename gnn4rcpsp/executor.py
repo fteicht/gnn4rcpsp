@@ -74,23 +74,14 @@ class SchedulingExecutor:
         return self._executed_schedule, self._current_time
 
     def progress(
-        self, next_tasks: Set[int], next_start: int
+        self, next_tasks: Set[int], next_start: int, expected_schedule: RCPSPSolution
     ) -> Tuple[int, RCPSPSolution, bool]:
-        """Takes the next task to execute and their starting date and returns the new current time and updated executed schedule
+        """Takes the next task to execute, their starting date and the expected schedule,
+        and returns the new current time and updated executed schedule
         and a boolean indicating whether all the tasks have been scheduled or not"""
 
-        # Compute the next event, i.e. smallest task ending date
-        self._current_time = min(
-            [self._current_time + 1]  # Ensure to progress at least by 1 time unit
-            + [
-                sched["end_time"]
-                for sched in self._executed_schedule.rcpsp_schedule.values()
-                if sched["end_time"] > self._current_time
-            ]
-        )
-
-        # Add next_task to the executed schedule if it is scheduled to start before running tasks have ended
-        if next_start <= self._current_time:
+        # Add next_task to the executed schedule if it is scheduled to start now
+        if next_start == self._current_time:
             self._executed_schedule.rcpsp_schedule.update(
                 {
                     next_task: {
@@ -106,20 +97,31 @@ class SchedulingExecutor:
                     for next_task in next_tasks
                 }
             )
-            self._current_time = min(
-                [self._current_time + 1]  # Ensure to progress at least by 1 time unit
-                + [
-                    sched["end_time"]
-                    for task, sched in self._executed_schedule.rcpsp_schedule.items()
-                    if task in next_tasks and sched["end_time"] > self._current_time
-                ]
-            )
-
             # Update the mode details of the started tasks
             for task in next_tasks:
                 self._executed_schedule.problem.mode_details[
                     task
                 ] = self._simulated_rcpsp.mode_details[task]
+
+        # Compute the next event, i.e. smallest executed task ending date or expected task starting date
+        filtered_starts = [
+            sched["start_time"]
+            for sched in expected_schedule.rcpsp_schedule.values()
+            if sched["start_time"] > self._current_time
+        ]
+        filtered_ends = [
+            sched["end_time"]
+            for sched in self._executed_schedule.rcpsp_schedule.values()
+            if sched["end_time"] > self._current_time
+        ]
+        if len(filtered_starts) > 0 and len(filtered_ends) > 0:
+            self._current_time = min(min(filtered_starts), min(filtered_ends))
+        elif len(filtered_starts) > 0:
+            self._current_time = min(filtered_starts)
+        elif len(filtered_ends) > 0:
+            self._current_time = min(filtered_ends)
+        else:
+            return (self._current_time, self._executed_schedule, True)
 
         # Return the new current time and updated executed schedule
         return (
@@ -430,7 +432,7 @@ if __name__ == "__main__":
         ) = executor.next_tasks(executed_schedule, current_time)
         print("Best tasks to start at time {}: {}".format(next_start, list(next_tasks)))
         current_time, executed_schedule, stop = executor.progress(
-            next_tasks, next_start
+            next_tasks, next_start, expected_schedule
         )
         print(
             "Executed schedule: {}\nExpected schedule: {}\nCurrent time: {}".format(
