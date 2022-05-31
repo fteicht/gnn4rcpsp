@@ -42,7 +42,7 @@ class SchedulingExecutor:
             range_around_mean_resource=1,
             range_around_mean_duration=3,
             do_uncertain_resource=False,
-            do_uncertain_duration=False,
+            do_uncertain_duration=True,
         )
         self._uncertain_rcpsp = UncertainRCPSPModel(
             base_rcpsp_model=self._rcpsp,
@@ -388,6 +388,8 @@ class SchedulingExecutor:
                 0, CPSAT_TIME_LIMIT - int(perf_counter() - curt)
             )
             xorig_list = xorig.tolist()
+            shift = min(xorig_list)
+            xorig_list = [x - shift for x in xorig_list]
             for i, x in enumerate(xorig_list):
                 model.AddHint(starts[i], x)
             # model._CpModel__model.solution_hint.vars.extend(list(range(len(dur))))
@@ -396,9 +398,11 @@ class SchedulingExecutor:
 
             if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
                 solution = [solver.Value(s) for s in starts]
+                shift = min(solution)
+                solution = [s - shift for s in solution]
                 return (
                     status,
-                    solver.Value(makespan),
+                    solver.Value(makespan) - shift,
                     {t: solution[i] for i, t in enumerate(rcpsp.successors)},
                 )
             else:
