@@ -1,12 +1,13 @@
 from copy import deepcopy
-from email.policy import default
 import os
-from typing import Dict, List, Set, Tuple
-from gym import make
+from typing import Dict, List, Set, Tuple, Union
+import matplotlib
+from matplotlib.collections import PatchCollection
+from matplotlib.patches import Polygon as pp
 import torch
 import numpy as np
 from time import perf_counter
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 from ortools.sat.python import cp_model
 from models import ResTransformer
 from skdecide.discrete_optimization.rcpsp.parser.rcpsp_parser import parse_file
@@ -18,12 +19,16 @@ from skdecide.discrete_optimization.rcpsp.rcpsp_model import (
     MethodRobustification,
     create_poisson_laws,
 )
+from skdecide.discrete_optimization.rcpsp.rcpsp_utils import (
+    compute_nice_resource_consumption,
+)
 from graph import Graph
 
-import networkx as nx
 import matplotlib.pyplot as plt
 
-CPSAT_TIME_LIMIT = 60  # 1 mn
+CPSAT_TIME_LIMIT = 10  # 10 s
+
+Rectangle = namedtuple("Rectangle", "xmin ymin xmax ymax")
 
 
 class SchedulingExecutor:
@@ -87,11 +92,13 @@ class SchedulingExecutor:
                     next_task: {
                         "start_time": next_start,
                         "end_time": next_start
-                        + max(
-                            mode["duration"]
-                            for mode in self._simulated_rcpsp.mode_details[
-                                next_task
-                            ].values()
+                        + int(  # in case the max() below returns a numpy type
+                            max(
+                                mode["duration"]
+                                for mode in self._simulated_rcpsp.mode_details[
+                                    next_task
+                                ].values()
+                            )
                         ),
                     }
                     for next_task in next_tasks
@@ -299,9 +306,11 @@ class SchedulingExecutor:
                         "start_time": feasible_solution[task] + current_time,
                         "end_time": feasible_solution[task]
                         + current_time
-                        + max(
-                            mode["duration"]
-                            for mode in rcpsp.mode_details[task].values()
+                        + int(  # in case the max() below returns a numpy type
+                            max(
+                                mode["duration"]
+                                for mode in rcpsp.mode_details[task].values()
+                            )
                         ),
                     }
                     for task in rcpsp.mode_details.keys()
@@ -398,17 +407,207 @@ class SchedulingExecutor:
 
             if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
                 solution = [solver.Value(s) for s in starts]
-                shift = min(solution)
-                solution = [s - shift for s in solution]
+                # shift = min(solution)
+                # solution = [s - shift for s in solution]
                 return (
                     status,
-                    solver.Value(makespan) - shift,
+                    # solver.Value(makespan) - shift,
+                    solver.Value(makespan),
                     {t: solution[i] for i, t in enumerate(rcpsp.successors)},
                 )
             else:
                 current_horizon = int(1.05 * current_horizon)
 
         return (status, float("inf"), {})
+
+    @staticmethod
+    def plot_ressource_view_online(
+        rcpsp_model: RCPSPModel,
+        rcpsp_sol: RCPSPSolution,
+        current_time: int,
+        list_resource: List[Union[int, str]] = None,
+        title_figure="",
+        fig=None,
+        ax=None,
+        ax_xlim=None,
+    ):
+        modes_extended = deepcopy(rcpsp_sol.rcpsp_modes)
+        modes_extended.insert(0, 1)
+        modes_extended.append(1)
+        if list_resource is None:
+            list_resource = rcpsp_model.resources_list
+        if ax is None:
+            fig, ax = plt.subplots(
+                nrows=len(list_resource), figsize=(10, 5), sharex=True
+            )
+            fig.suptitle(title_figure)
+        polygons_ax = {i: [] for i in range(len(list_resource))}
+        labels_ax = {i: [] for i in range(len(list_resource))}
+        sorted_activities = sorted(
+            rcpsp_sol.rcpsp_schedule,
+            key=lambda x: rcpsp_sol.rcpsp_schedule[x]["start_time"],
+        )
+        for j in sorted_activities:
+            time_start = rcpsp_sol.rcpsp_schedule[j]["start_time"]
+            time_end = rcpsp_sol.rcpsp_schedule[j]["end_time"]
+            for i in range(len(list_resource)):
+                cons = rcpsp_model.mode_details[j][modes_extended[j - 1]][
+                    list_resource[i]
+                ]
+                if cons == 0:
+                    continue
+                bound = rcpsp_model.resources[list_resource[i]]
+                for k in range(0, bound):
+                    # polygon = Polygon([(time_start, k), (time_end, k), (time_end, k+cons),
+                    #                    (time_start, k+cons), (time_start, k)])
+                    polygon = Rectangle(
+                        xmin=time_start, ymin=k, xmax=time_end, ymax=k + cons
+                    )
+                    areas = [
+                        SchedulingExecutor.area_intersection(polygon, p)
+                        for p in polygons_ax[i]
+                    ]
+                    if len(areas) == 0 or max(areas) == 0:
+                        polygons_ax[i].append(polygon)
+                        labels_ax[i].append(j)
+                        break
+        for i in range(len(list_resource)):
+            patches = []
+            for polygon in polygons_ax[i]:
+                x = [
+                    polygon.xmin,
+                    polygon.xmax,
+                    polygon.xmax,
+                    polygon.xmin,
+                    polygon.xmin,
+                ]
+                y = [
+                    polygon.ymin,
+                    polygon.ymin,
+                    polygon.ymax,
+                    polygon.ymax,
+                    polygon.ymin,
+                ]
+                ax[i].plot(
+                    x,
+                    y,
+                    zorder=-1,
+                    color="b"
+                    if x[1] <= current_time
+                    else "g"
+                    if x[0] >= current_time
+                    else "cyan",
+                )
+                patches.append(pp(xy=[(xx, yy) for xx, yy in zip(x, y)]))
+            p = PatchCollection(
+                patches, cmap=matplotlib.cm.get_cmap("Blues"), alpha=0.4
+            )
+            ax[i].add_collection(p)
+        merged_times, merged_cons = compute_nice_resource_consumption(
+            rcpsp_model, rcpsp_sol, list_resources=list_resource
+        )
+        for i in range(len(list_resource)):
+            ax[i].vlines(
+                current_time,
+                0,
+                max(merged_cons),
+                colors="darkgrey",
+                linestyles="dashed",
+            )
+        for i in range(len(list_resource)):
+            ax[i].plot(
+                merged_times[i],
+                merged_cons[i],
+                color="r",
+                linewidth=2,
+                label="Consumption " + str(list_resource[i]),
+                zorder=1,
+            )
+            ax[i].axhline(
+                y=rcpsp_model.resources[list_resource[i]],
+                linestyle="--",
+                label="Limit : " + str(list_resource[i]),
+                zorder=0,
+            )
+            ax[i].legend(fontsize=5)
+            lims = ax[i].get_xlim()
+            if ax_xlim is None:
+                ax[i].set_xlim([lims[0], 1.0 * lims[1]])
+            else:
+                ax[i].set_xlim([ax_xlim[0], ax_xlim[1]])
+        return fig, ax
+
+    @staticmethod
+    def plot_task_gantt_online(
+        rcpsp_model: RCPSPModel,
+        rcpsp_sol: RCPSPSolution,
+        current_time: int,
+        fig=None,
+        ax=None,
+        ax_xlim=None,
+    ):
+        if fig is None or ax is None:
+            fig, ax = plt.subplots(1, figsize=(10, 5))
+            ax.set_title("Gantt Task")
+        tasks = sorted(rcpsp_model.mode_details.keys())
+        nb_task = len(tasks)
+        sorted_task_by_start = sorted(
+            rcpsp_sol.rcpsp_schedule,
+            key=lambda x: 100000 * rcpsp_sol.rcpsp_schedule[x]["start_time"] + x,
+        )
+        sorted_task_by_end = sorted(
+            rcpsp_sol.rcpsp_schedule,
+            key=lambda x: 100000 * rcpsp_sol.rcpsp_schedule[x]["end_time"] + x,
+        )
+        max_time = rcpsp_sol.rcpsp_schedule[sorted_task_by_end[-1]]["end_time"]
+        min_time = rcpsp_sol.rcpsp_schedule[sorted_task_by_end[0]]["start_time"]
+        patches = []
+        for j in range(nb_task):
+            nb_colors = len(tasks) // 2
+            colors = plt.cm.get_cmap("hsv", nb_colors)
+            box = [
+                (j - 0.25, rcpsp_sol.rcpsp_schedule[tasks[j]]["start_time"]),
+                (j - 0.25, rcpsp_sol.rcpsp_schedule[tasks[j]]["end_time"]),
+                (j + 0.25, rcpsp_sol.rcpsp_schedule[tasks[j]]["end_time"]),
+                (j + 0.25, rcpsp_sol.rcpsp_schedule[tasks[j]]["start_time"]),
+                (j - 0.25, rcpsp_sol.rcpsp_schedule[tasks[j]]["start_time"]),
+            ]
+            # polygon = Polygon([(b[1], b[0]) for b in box])
+            x = [xy[1] for xy in box]
+            y = [xy[0] for xy in box]
+            my_color = (
+                "b"
+                if box[1][1] <= current_time
+                else "g"
+                if box[0][1] >= current_time
+                else "cyan"
+            )
+            ax.plot(x, y, zorder=-1, color=my_color)
+            patches.append(pp(xy=[(xx[1], xx[0]) for xx in box], facecolor=my_color))
+        ax.vlines(current_time, -0.5, nb_task, colors="darkgrey", linestyles="dashed")
+        p = PatchCollection(patches, match_original=True, alpha=0.4)
+        ax.add_collection(p)
+        if ax_xlim is None:
+            ax.set_xlim((min_time, max_time))
+        else:
+            ax.set_xlim((ax_xlim[0], ax_xlim[1]))
+        ax.set_ylim((-0.5, nb_task))
+        ax.set_yticks(range(nb_task))
+        ax.set_yticklabels(
+            tuple(["Task " + str(tasks[j]) for j in range(nb_task)]),
+            fontdict={"size": 7},
+        )
+        return fig, ax
+
+    @staticmethod
+    def area_intersection(a: Rectangle, b: Rectangle):
+        # Solution picked here, to avoid shapely.
+        # https://stackoverflow.com/questions/27152904/calculate-overlapped-area-between-two-rectangles
+        dx = min(a.xmax, b.xmax) - max(a.xmin, b.xmin)
+        dy = min(a.ymax, b.ymax) - max(a.ymin, b.ymin)
+        if (dx >= 0) and (dy >= 0):
+            return dx * dy
+        return 0
 
 
 if __name__ == "__main__":
@@ -425,7 +624,14 @@ if __name__ == "__main__":
     executor = SchedulingExecutor(rcpsp=rcpsp, model=model, device=device, samples=10)
 
     executed_schedule, current_time = executor.reset()
+    makespan = None
     stop = False
+
+    fig_gantt = None
+    ax_gantt = None
+    fig_res = None
+    ax_res = None
+    plt.ion()
 
     while not stop:
         (
@@ -443,3 +649,33 @@ if __name__ == "__main__":
                 executed_schedule, expected_schedule, current_time
             )
         )
+        makespan = expected_makespan * 1.1 if makespan is None else makespan
+        merged_schedule = deepcopy(executed_schedule.rcpsp_schedule)
+        merged_schedule.update(expected_schedule.rcpsp_schedule)
+        merged_solution = RCPSPSolution(
+            problem=executed_schedule.problem,
+            rcpsp_schedule=merged_schedule,
+            rcpsp_permutation=[],
+            standardised_permutation=[],
+        )
+        fig_gantt, ax_gantt = SchedulingExecutor.plot_task_gantt_online(
+            merged_solution.problem,
+            merged_solution,
+            current_time,
+            fig=fig_gantt,
+            ax=ax_gantt,
+            ax_xlim=[0, makespan],
+        )
+        fig_res, ax_res = SchedulingExecutor.plot_ressource_view_online(
+            merged_solution.problem,
+            merged_solution,
+            next_start,
+            fig=fig_res,
+            ax=ax_res,
+            ax_xlim=[0, makespan],
+        )
+        plt.show()
+        plt.pause(0.01)
+        ax_gantt.cla()
+        for ar in ax_res:
+            ar.cla()
