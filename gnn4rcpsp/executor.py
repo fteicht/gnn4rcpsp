@@ -273,6 +273,7 @@ class SchedulingExecutor:
         for ts, lmk in scenarios.items():
             highest_makespan = 0
             worst_solution = None
+            date_to_start = None
             for mk in lmk:
                 solution = mk[0]
                 if (
@@ -287,10 +288,11 @@ class SchedulingExecutor:
                     > highest_makespan
                 ):
                     worst_solution = solution
+                    date_to_start = mk[2]
             scenarios[ts] = (
                 worst_solution,
                 np.mean([mk[1] for mk in lmk]),
-                max(mk[2] for mk in lmk),
+                date_to_start,
             )
 
         if len(scenarios) == 0:
@@ -311,16 +313,17 @@ class SchedulingExecutor:
         best_tasks = None
         best_next_start = None
         best_makespan = float("inf")
+        worst_expected_schedule = None
         for tasks in best_tasks_list:
             solution_makespan_date = scenarios[tasks]
             if solution_makespan_date[1] < best_makespan:
+                worst_expected_schedule = solution_makespan_date[0]
                 best_makespan = solution_makespan_date[1]
                 best_next_start = solution_makespan_date[2]
                 best_tasks = tasks
 
         # Return the best next tasks and the worst schedule in term of makespan
         # among the scenario schedules that feature those best next tasks to start next
-        worst_expected_schedule = scenarios[best_tasks][0]
         return (
             best_tasks - running_tasks,
             best_next_start + current_time,
