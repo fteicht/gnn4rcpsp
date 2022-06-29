@@ -266,35 +266,61 @@ class SchedulingExecutor:
                     elif start == date_to_start:
                         tasks_to_start.add(task)
 
-            scenarios[frozenset(tasks_to_start)].append((makespan, date_to_start))
+            scenarios[frozenset(tasks_to_start)].append(
+                (feasible_solution, makespan, date_to_start)
+            )
 
         for ts, lmk in scenarios.items():
-            scenarios[ts] = (np.mean([mk[0] for mk in lmk]), max(mk[1] for mk in lmk))
+            highest_makespan = 0
+            worst_solution = None
+            for mk in lmk:
+                solution = mk[0]
+                if (
+                    max(
+                        solution[task]
+                        + max(
+                            mode["duration"]
+                            for mode in rcpsp.mode_details[task].values()
+                        )
+                        for task in solution
+                    )
+                    > highest_makespan
+                ):
+                    worst_solution = solution
+            scenarios[ts] = (
+                worst_solution,
+                np.mean([mk[1] for mk in lmk]),
+                max(mk[2] for mk in lmk),
+            )
 
         if len(scenarios) == 0:
             raise RuntimeError("No feasible scenario")
 
-        # Select the best tasks to start in term of average makespan
+        # Select the best tasks to start in term of highest choice frequency then average makespan
+        tasks_frequency = defaultdict(lambda: 0)
+        for tasks in scenarios:
+            tasks_frequency[tasks] = tasks_frequency[tasks] + 1
+        highest_frequency = 0
+        best_tasks_list = []
+        for tasks, frequency in tasks_frequency.items():
+            if frequency == highest_frequency:
+                best_tasks_list.append(tasks)
+            elif frequency > highest_frequency:
+                best_tasks_list = [tasks]
+                highest_frequency = frequency
         best_tasks = None
         best_next_start = None
         best_makespan = float("inf")
-        for tasks, makespan_and_date in scenarios.items():
-            if makespan_and_date[0] < best_makespan:
-                best_makespan = makespan_and_date[0]
-                best_next_start = makespan_and_date[1]
+        for tasks in best_tasks_list:
+            solution_makespan_date = scenarios[tasks]
+            if solution_makespan_date[1] < best_makespan:
+                best_makespan = solution_makespan_date[1]
+                best_next_start = solution_makespan_date[2]
                 best_tasks = tasks
 
-        # Compute the median RCPSP schedule with best tasks forced to start first
-        # (the average or worst case ones appear to be barely feasible in practice)
-        # worst_case_rcpsp = best_uncertain_rcpsp.create_rcpsp_model(MethodRobustification(MethodBaseRobustification.WORST_CASE))
-        starts_hint.update({task: best_next_start for task in best_tasks})
-        status, makespan, feasible_solution = self.compute_schedule(rcpsp, starts_hint)
-        if status == cp_model.INFEASIBLE:
-            raise RuntimeError("Infeasible schedule")
-        elif status == cp_model.MODEL_INVALID:
-            raise RuntimeError("Invalid RCPSP")
-
-        # Return the best next tasks and the median RCPSP's makespan and schedule
+        # Return the best next tasks and the worst schedule in term of makespan
+        # among the scenario schedules that feature those best next tasks to start next
+        worst_expected_schedule = scenarios[best_tasks][0]
         return (
             best_tasks - running_tasks,
             best_next_start + current_time,
@@ -303,8 +329,8 @@ class SchedulingExecutor:
                 problem=executed_rcpsp,
                 rcpsp_schedule={
                     task: {
-                        "start_time": feasible_solution[task] + current_time,
-                        "end_time": feasible_solution[task]
+                        "start_time": worst_expected_schedule[task] + current_time,
+                        "end_time": worst_expected_schedule[task]
                         + current_time
                         + int(  # in case the max() below returns a numpy type
                             max(
@@ -407,12 +433,11 @@ class SchedulingExecutor:
 
             if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
                 solution = [solver.Value(s) for s in starts]
-                # shift = min(solution)
-                # solution = [s - shift for s in solution]
+                shift = min(solution)
+                solution = [s - shift for s in solution]
                 return (
                     status,
-                    # solver.Value(makespan) - shift,
-                    solver.Value(makespan),
+                    solver.Value(makespan) - shift,
                     {t: solution[i] for i, t in enumerate(rcpsp.successors)},
                 )
             else:
