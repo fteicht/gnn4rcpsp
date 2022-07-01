@@ -105,7 +105,7 @@ def check_solution(data):
 
 def train(train_loader, model, optimizer, device, writer):
     model.train()
-    NUM_EPOCHS = 1000
+    NUM_EPOCHS = 50000
     step = 0
     for epoch in tqdm(range(NUM_EPOCHS)):
         epoch_violations = {
@@ -182,7 +182,7 @@ def train(train_loader, model, optimizer, device, writer):
             writer.add_scalar('resource_mag', epoch_violations['resource_mag'], step)
             writer.add_scalar('makespan', epoch_violations['makespan'], step)
 
-            torch.save(model.state_dict(), f"model_{epoch}.tch")
+            torch.save(model.state_dict(), f"saved_models/ResTransformer-256-50000/model_{epoch}.tch")
 
         writer.flush()
 
@@ -197,12 +197,19 @@ if __name__ == "__main__":
                 solution_file=os.path.join(solutions_dir, 'cpsat_solutions.json'))
     
     data_list = torch.load('data_list.tch')
-    train_list = random.sample(range(len(data_list)), int(0.8 * len(data_list)))
+    
+    if not os.path.exists(os.path.join(os.path.dirname(__file__), 'train_list.tch')):
+        train_list = torch.load('train_list.tch')
+    else:
+        train_list = random.sample(range(len(data_list)), int(0.8 * len(data_list)))
+        torch.save(train_list, './train_list.tch')
+    
     train_loader = DataLoader([data_list[d] for d in train_list], batch_size=32, shuffle=True)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     Net = ResTransformer
     # Net = ResGINE
     model = Net().to(device)
+    # model.load_state_dict(torch.load(f'saved_models/model_9900.tch', map_location=device))
     MAKESPAN_MAX_SCALE = model.scale.max()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)#, weight_decay=5e-4)
     # optimizer = torch.optim.SGD(model.parameters(), lr=1e-0)#, weight_decay=5e-4)
@@ -211,5 +218,4 @@ if __name__ == "__main__":
     # writer = SummaryWriter(f's3://iooda-gnn4rcpsp-bucket/tensorboard_logs/{run_id}')
     writer = SummaryWriter(f'../tensorboard_logs/{run_id}')
     
-    torch.save(train_list, './train_list.tch')
     train(train_loader=train_loader, model=model, optimizer=optimizer, device=device, writer=writer)
