@@ -17,6 +17,7 @@ from learn_schedules import check_solution, compute_loss
 from models import ResTransformer, ResGINE
 
 CPSAT_TIME_LIMIT = 600  # 10 mn
+CPSAT_FEAS_TIME_LIMIT = 30  # 30 s
 CONSTRAINT_MAKESPAN = True
 SEARCH_FOR_OPTIMALITY = False
 
@@ -141,7 +142,10 @@ def make_feasible_cpsat(data):
     # Iterate over batch elements for simplicity
     # TODO: vectorize?
     data_list = data_batch.to_data_list()
+    cnt = 0
     for data in data_list:
+        cnt += 1
+        print('Instance {}'.format(cnt))
         
         t2t, dur, r2t, rc, con, ref_makespan = (
             data.t2t.view(len(data.dur), -1).data.cpu().detach().numpy(),
@@ -152,62 +156,83 @@ def make_feasible_cpsat(data):
             data.reference_makespan
         )
         xorig = np.around(data.out[len(rc):,0].cpu().detach().numpy(), decimals=0).astype(int)
-            
-        model = cp_model.CpModel()
         makespan_orig = max(xorig + dur)
-        horizon = int(makespan_orig * 1.2)
-        starts = [model.NewIntVar(0, horizon - 1, 'start_task[{}]'.format(i)) for i in range(len(dur))]
-        ends = [model.NewIntVar(0, horizon - 1, 'start_task[{}]'.format(i)) for i in range(len(dur))]
-        durs = [model.NewConstant(int(dur[i])) for i in range(len(dur))]
-        intervals = [model.NewIntervalVar(starts[i], durs[i], ends[i], 'interval_task[{}]'.format(i)) for i in range(len(dur))]
-        makespan = model.NewIntVar(0, horizon - 1, 'makespan')
+        start_time = perf_counter()
+        current_makespan_scaling = 1.0
+        previous_makespan_scaling = current_makespan_scaling
+        feasible_solution = None
         
-        # for t in range(t2t.shape[0]):
-        #     model.Add(starts[t] + durs[t] == ends[t])
-        
-        for t in range(t2t.shape[0]):
-            for p in range(t2t.shape[1]):
-                if t2t[t][p] > 0:
-                    model.Add(ends[p] <= starts[t])
-                    # model.AddNoOverlap([intervals[t], intervals[p]])  # redundant
-        
-        for r in range(r2t.shape[0]):
-            model.AddCumulative([intervals[t] for t in range(len(dur)) if r2t[r][t] > 0],
-                                [int(r2t[r][t]) for t in range(len(dur)) if r2t[r][t] > 0],
-                                int(rc[r]))
+        while perf_counter() - start_time < CPSAT_TIME_LIMIT:
             
-        model.AddMaxEquality(makespan, ends)
+            model = cp_model.CpModel()
+            horizon = int(makespan_orig * current_makespan_scaling * 1.2)
+            starts = [model.NewIntVar(0, horizon - 1, 'start_task[{}]'.format(i)) for i in range(len(dur))]
+            ends = [model.NewIntVar(0, horizon - 1, 'start_task[{}]'.format(i)) for i in range(len(dur))]
+            durs = [model.NewConstant(int(dur[i])) for i in range(len(dur))]
+            intervals = [model.NewIntervalVar(starts[i], durs[i], ends[i], 'interval_task[{}]'.format(i)) for i in range(len(dur))]
+            makespan = model.NewIntVar(0, horizon - 1, 'makespan')
+            
+            # for t in range(t2t.shape[0]):
+            #     model.Add(starts[t] + durs[t] == ends[t])
+            
+            for t in range(t2t.shape[0]):
+                for p in range(t2t.shape[1]):
+                    if t2t[t][p] > 0:
+                        model.Add(ends[p] <= starts[t])
+                        # model.AddNoOverlap([intervals[t], intervals[p]])  # redundant
+            
+            for r in range(r2t.shape[0]):
+                model.AddCumulative([intervals[t] for t in range(len(dur)) if r2t[r][t] > 0],
+                                    [int(r2t[r][t]) for t in range(len(dur)) if r2t[r][t] > 0],
+                                    int(rc[r]))
+                
+            model.AddMaxEquality(makespan, ends)
+            
+            if CONSTRAINT_MAKESPAN:
+                scaled_makespan = model.NewConstant(int(makespan_orig * current_makespan_scaling))
+                model.Add(makespan <= scaled_makespan)
+                if current_makespan_scaling > previous_makespan_scaling:
+                    previous_makespan =  model.NewConstant(int(makespan_orig * previous_makespan_scaling))
+                    model.Add(makespan > previous_makespan)
+            
+            # First we search for a feasible solution
+            solver = cp_model.CpSolver()
+            solver.parameters.max_time_in_seconds = CPSAT_FEAS_TIME_LIMIT if CONSTRAINT_MAKESPAN else CPSAT_TIME_LIMIT
+            xorig_list = xorig.tolist()
+            for i, x in enumerate(xorig_list):
+                model.AddHint(starts[i], x)
+            # model._CpModel__model.solution_hint.vars.extend(list(range(len(dur))))
+            # model._CpModel__model.solution_hint.values.extend(xorig.tolist())
+            cur_time = perf_counter()
+            status = solver.Solve(model)
         
-        if CONSTRAINT_MAKESPAN:
-            orig_makespan = model.NewConstant(int(makespan_orig))
-            model.Add(makespan <= orig_makespan)
+            if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
+                feasible_solution = [solver.Value(s) for s in starts]
+                print('FEASIBLE: [{}-{}]'.format(int(makespan_orig * previous_makespan_scaling), int(makespan_orig * current_makespan_scaling)))
+                break
+            elif status == cp_model.INFEASIBLE:
+                print('INFEASIBLE: [{}-{}]'.format(int(makespan_orig * previous_makespan_scaling), int(makespan_orig * current_makespan_scaling)))
+                previous_makespan_scaling = current_makespan_scaling
+                current_makespan_scaling += 0.05
+                if CONSTRAINT_MAKESPAN:
+                    continue
+                else:
+                    break
+            elif status == cp_model.MODEL_INVALID:
+                raise RuntimeError('Invalid CPSAT model.')
         
-        # First we search for a feasible solution
-        solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = CPSAT_TIME_LIMIT
-        xorig_list = xorig.tolist()
-        for i, x in enumerate(xorig_list):
-            model.AddHint(starts[i], x)
-        # model._CpModel__model.solution_hint.vars.extend(list(range(len(dur))))
-        # model._CpModel__model.solution_hint.values.extend(xorig.tolist())
-        cur_time = perf_counter()
-        status = solver.Solve(model)
-        
-        if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
-            feasible_solution = [solver.Value(s) for s in starts]
-            cpsat_result['feasibility_timing'].append(perf_counter() - cur_time)
+        if feasible_solution is not None:
+            cpsat_result['feasibility_timing'].append(perf_counter() - (cur_time if not CONSTRAINT_MAKESPAN else start_time))
             cpsat_result['feasibility_rel_makespan_cor'].append(solver.Value(makespan) / max(xorig + dur))
             cpsat_result['feasibility_rel_makespan_ref'].append(solver.Value(makespan) / max(ref_makespan))
             cpsat_result['feasibility_abs_makespan'].append(int(solver.Value(makespan)))
-        elif status == cp_model.INFEASIBLE:
+        else:
             cpsat_result['feasibility_timing'].append(-1)
             cpsat_result['feasibility_rel_makespan_cor'].append(-1)
             cpsat_result['feasibility_rel_makespan_ref'].append(-1)
             cpsat_result['feasibility_abs_makespan'].append(-1)
             continue
-        elif status == cp_model.MODEL_INVALID:
-            raise RuntimeError('Invalid CPSAT model.')
-                
+            
         # Second we search for an optimal solution
         if SEARCH_FOR_OPTIMALITY:
             model.Minimize(makespan)
@@ -256,7 +281,8 @@ def test(test_loader, test_list, model, device, writer):
     result_dict = {}
     model.eval()
     
-    for batch_idx, data in enumerate(tqdm(test_loader)):
+    # for batch_idx, data in enumerate(tqdm(test_loader)):
+    for batch_idx, data in enumerate(test_loader):
         cur_time = perf_counter()
         data.to(device)
         out = model(data)

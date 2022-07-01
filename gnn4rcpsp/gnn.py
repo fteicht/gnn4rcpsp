@@ -40,7 +40,8 @@ class Transformer5(torch.nn.Module):
 
 
 class ResTransformer(torch.nn.Module):
-    N_HIDDEN = 128
+    # N_HIDDEN = 128
+    N_HIDDEN = 256
     N_BLOCKS = 15
     N_BINARY = 8
     # N_BINARY = 1
