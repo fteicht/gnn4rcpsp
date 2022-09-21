@@ -1,24 +1,54 @@
+from typing import Optional, Callable
+
 import datetime
 import json
-from pickletools import optimize
+import time
+
 import numpy as np
-from sniffio import current_async_library
 import torch
-from torch.utils.tensorboard import SummaryWriter
 from torch_geometric.data import DataLoader
 from tqdm import tqdm
 from time import perf_counter
 
-import nlopt
+#import nlopt
 from ortools.sat.python import cp_model
-
 from learn_schedules import check_solution, compute_loss
 
 from models import ResTransformer, ResGINE
 
-CPSAT_TIME_LIMIT = 600  # 10 mn
+CPSAT_TIME_LIMIT = 25  # 10 mn
 CONSTRAINT_MAKESPAN = True
 SEARCH_FOR_OPTIMALITY = False
+
+
+def build_rcpsp_model(t2t, dur, r2t, rc, ref_makespan):
+    from discrete_optimization.rcpsp.rcpsp_model import RCPSPModel, RCPSPSolution
+    nb_tasks = len(dur)
+    tasks_list = list(range(nb_tasks))
+    successors = {i: [] for i in tasks_list}
+    mode_details = {tasks_list[i]: {1: {"duration": dur[i]}}
+                    for i in range(nb_tasks)}
+    nb_ressources = r2t.shape[0]
+    resources_list = [f"R{i}" for i in range(nb_ressources)]
+    resources = {resources_list[i]: int(rc[i]) for i in range(nb_ressources)}
+
+    for t in range(nb_tasks):
+        for p in range(nb_tasks):
+            if t2t[t][p] > 0:
+                successors[tasks_list[p]] += [tasks_list[t]]
+                # model.AddNoOverlap([intervals[t], intervals[p]])  # redundant
+    for t in range(nb_tasks):
+        for r in range(nb_ressources):
+            mode_details[tasks_list[t]][1][resources_list[r]] = int(r2t[r][t])
+    model = RCPSPModel(resources=resources, non_renewable_resources=[],
+                       mode_details=mode_details, successors=successors,
+                       horizon=500,
+                       tasks_list=tasks_list,
+                       source_task=0,
+                       sink_task=nb_tasks-1)
+    dummy_solution = model.get_dummy_solution()
+    print("makespan dummy ", dummy_solution.get_end_time(model.sink_task))
+    return model, dummy_solution
 
 
 def make_feasible_nlopt(data):
@@ -152,7 +182,13 @@ def make_feasible_cpsat(data):
             data.reference_makespan
         )
         xorig = np.around(data.out[len(rc):,0].cpu().detach().numpy(), decimals=0).astype(int)
-            
+        # do_model, dummy_solution = build_rcpsp_model(t2t, dur, r2t, rc, ref_makespan)
+        # sorted_index = np.argsort(xorig)
+        # perm = (sorted_index-1)
+        # perm = [p for p in perm if p != -1 and p != len(xorig)-2]
+        # sol = RCPSPSolution(problem=do_model, rcpsp_permutation=perm)
+        # print("Makespan by post process : ", sol.get_max_end_time())
+        # print("Origin makespan ", max(xorig + dur))
         model = cp_model.CpModel()
         makespan_orig = max(xorig + dur)
         horizon = int(makespan_orig * 1.2)
@@ -181,7 +217,6 @@ def make_feasible_cpsat(data):
         if CONSTRAINT_MAKESPAN:
             orig_makespan = model.NewConstant(int(makespan_orig))
             model.Add(makespan <= orig_makespan)
-        
         # First we search for a feasible solution
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = CPSAT_TIME_LIMIT
@@ -192,14 +227,23 @@ def make_feasible_cpsat(data):
         # model._CpModel__model.solution_hint.values.extend(xorig.tolist())
         cur_time = perf_counter()
         status = solver.Solve(model)
-        
         if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
             feasible_solution = [solver.Value(s) for s in starts]
+            print("Obtained ", max(feasible_solution))
             cpsat_result['feasibility_timing'].append(perf_counter() - cur_time)
             cpsat_result['feasibility_rel_makespan_cor'].append(solver.Value(makespan) / max(xorig + dur))
             cpsat_result['feasibility_rel_makespan_ref'].append(solver.Value(makespan) / max(ref_makespan))
             cpsat_result['feasibility_abs_makespan'].append(int(solver.Value(makespan)))
+            print("FEASIBLE")
+        elif status == cp_model.UNKNOWN:
+            print("Unknown with given horizon ", makespan_orig)
+            cpsat_result['feasibility_timing'].append(-1)
+            cpsat_result['feasibility_rel_makespan_cor'].append(-1)
+            cpsat_result['feasibility_rel_makespan_ref'].append(-1)
+            cpsat_result['feasibility_abs_makespan'].append(-1)
+            continue
         elif status == cp_model.INFEASIBLE:
+            print("INFEASIBLE with given horizon ", makespan_orig)
             cpsat_result['feasibility_timing'].append(-1)
             cpsat_result['feasibility_rel_makespan_cor'].append(-1)
             cpsat_result['feasibility_rel_makespan_ref'].append(-1)
@@ -235,11 +279,15 @@ def make_feasible_cpsat(data):
                 raise RuntimeError('Invalid CPSAT model.')
     
     for k in cpsat_result:
+
         cpsat_result[k] = np.mean([r for r in cpsat_result[k] if r > -1])
         
     if len(data_list) == 1:  # batch sizes of 1 so 1 batch == 1 instance
         if np.isnan(cpsat_result['feasibility_timing']):
-            cpsat_result['schedule'] = 'INFEASIBLE'
+            if status == cp_model.INFEASIBLE:
+                cpsat_result['schedule'] = 'INFEASIBLE'
+            if status == cp_model.UNKNOWN:
+                cpsat_result['schedule'] = 'UNKNOWN'
         else:
             cpsat_result['schedule'] = {
                 'task {}'.format(task_id + 1): {
@@ -248,11 +296,83 @@ def make_feasible_cpsat(data):
                 }
                 for task_id, start in enumerate(starts)
             }
-        
     return cpsat_result
 
 
-def test(test_loader, test_list, model, device, writer):
+def make_feasible_sgs(data):
+    try:
+        from discrete_optimization.rcpsp.rcpsp_model import RCPSPSolution
+    except Exception as e:
+        print("install discreteopt standalone, "
+              "https://github.com/airbus/discrete-optimization, pip install --editable .")
+        raise ImportError("Missing discrete opt library")
+    # need to install the github public discropt.
+
+    data_batch = data
+
+    cpsat_result = {
+        'feasibility_timing': [],
+        'feasibility_rel_makespan_cor': [],
+        'feasibility_rel_makespan_ref': [],
+        'feasibility_abs_makespan': [],
+    }
+
+    if SEARCH_FOR_OPTIMALITY:
+        cpsat_result.update({
+            'optimization_timing': [],
+            'optimization_rel_makespan_cor': [],
+            'optimization_rel_makespan_ref': [],
+            'optimization_abs_makespan': []
+        })
+
+    # Iterate over batch elements for simplicity
+    # TODO: vectorize?
+    data_list = data_batch.to_data_list()
+    for data in data_list:
+        t2t, dur, r2t, rc, con, ref_makespan = (
+            data.t2t.view(len(data.dur), -1).data.cpu().detach().numpy(),
+            data.dur.data.cpu().detach().numpy(),
+            data.r2t.view(len(data.rc), len(data.dur)).data.cpu().detach().numpy(),
+            data.rc.data.cpu().detach().numpy(),
+            data.con.view(*data.con_shape).data.cpu().detach().numpy(),
+            data.reference_makespan
+        )
+        do_model, dummy_solution = build_rcpsp_model(t2t, dur, r2t, rc, ref_makespan)
+        xorig = np.around(data.out[len(rc):, 0].cpu().detach().numpy(), decimals=0).astype(int)
+        sorted_index = np.argsort(xorig)
+        perm = (sorted_index - 1)
+        perm = [p for p in perm if p != -1 and p != len(xorig) - 2]
+        cur_time = perf_counter()
+        sol = RCPSPSolution(problem=do_model, rcpsp_permutation=perm)
+        makespan = sol.get_max_end_time()
+        feasible_solution = [sol.get_start_time(t) for t in do_model.tasks_list]
+        print("Makespan GNN ", max(xorig+dur))
+        print("Ref makespan ", max(ref_makespan))
+        print("Obtained by post pro gnn ", max(feasible_solution))
+        cpsat_result['feasibility_timing'].append(perf_counter() - cur_time)
+        cpsat_result['feasibility_rel_makespan_cor'].append(makespan / max(xorig + dur))
+        cpsat_result['feasibility_rel_makespan_ref'].append(makespan / max(ref_makespan))
+        cpsat_result['feasibility_abs_makespan'].append(int(makespan))
+    for k in cpsat_result:
+        cpsat_result[k] = np.mean([r for r in cpsat_result[k] if r > -1])
+    if len(data_list) == 1:  # batch sizes of 1 so 1 batch == 1 instance
+        if np.isnan(cpsat_result['feasibility_timing']):
+            cpsat_result['schedule'] = 'INFEASIBLE'
+        else:
+            cpsat_result['schedule'] = {
+                'task {}'.format(task_id + 1): {
+                    'start_time': feasible_solution[task_id],
+                    'end_time': feasible_solution[task_id] + dur[task_id]
+                }
+                for task_id, start in enumerate(feasible_solution)
+            }
+    return cpsat_result
+
+
+def test(test_loader, test_list, model, device, writer,
+         compute_feasible_schedule_provider: Optional[Callable] = None):
+    if compute_feasible_schedule_provider is None:
+        compute_feasible_schedule_provider = make_feasible_cpsat  # by default do this cp-sat routine.
     result_dict = {}
     model.eval()
     
@@ -271,7 +391,11 @@ def test(test_loader, test_list, model, device, writer):
             writer.add_scalar('loss', loss.item(), batch_idx)
         
         batch_violations = check_solution(data)
-        rel_makespan = make_feasible_cpsat(data)
+        t = time.time()
+        print("start feasibility")
+        rel_makespan = compute_feasible_schedule_provider(data)
+        t_end = time.time()
+        print(t_end-t, "sec for feasibility")
         
         batch_result = {
             'benchmark_id': test_list[batch_idx],  # batch_size==1 thus batch_idx==test_instance_id
@@ -315,7 +439,34 @@ def test(test_loader, test_list, model, device, writer):
     return result_dict
 
 
-if __name__ == "__main__":
+def script_gpd():
+    data_list = torch.load('../torch_folder/data_list.tch')
+    train_list = torch.load('../torch_folder/train_list.tch')
+    test_list = list(set(range(len(data_list))) - set(train_list))
+    test_loader = DataLoader([data_list[d] for d in test_list], batch_size=1, shuffle=False)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    Net = ResTransformer
+    # Net = ResGINE
+    model = Net().to(device)
+    # model.load_state_dict(torch.load('saved_models/ResTransformer-256-50000/model_49900.tch'))
+    model.load_state_dict(torch.load('../torch_folder/model_ResTransformer_256_50000.tch',
+                                     map_location=device))
+    run_id = timestamp = datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S')
+    print(f"Run ID: {run_id}")
+    # writer = SummaryWriter(f's3://iooda-gnn4rcpsp-bucket/tensorboard_logs/{run_id}')
+    # writer = SummaryWriter(f'../tensorboard_logs/{run_id}')
+    writer = None
+    result = test(test_loader=test_loader,
+                  test_list=test_list,
+                  model=model,
+                  device=device,
+                  writer=writer,
+                  compute_feasible_schedule_provider=make_feasible_sgs)
+    with open(f'../cp_solutions/inference_vs_sgspostpro_{run_id}.json', 'w') as jsonfile:
+        json.dump(result, jsonfile, indent=2)
+
+
+def script_ftk():
     data_list = torch.load('../torch/data_list.tch')
     train_list = torch.load('../torch/train_list.tch')
     test_list = list(set(range(len(data_list))) - set(train_list))
@@ -333,3 +484,10 @@ if __name__ == "__main__":
     result = test(test_loader=test_loader, test_list=test_list, model=model, device=device, writer=writer)
     with open(f'../cp_solutions/inference_vs_cpsat_{run_id}.json', 'w') as jsonfile:
         json.dump(result, jsonfile, indent=2)
+
+
+if __name__ == "__main__":
+    script_gpd()
+    # script_ftk()
+
+
