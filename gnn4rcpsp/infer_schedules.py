@@ -22,7 +22,12 @@ SEARCH_FOR_OPTIMALITY = False
 
 
 def build_rcpsp_model(t2t, dur, r2t, rc, ref_makespan):
-    from discrete_optimization.rcpsp.rcpsp_model import RCPSPModel, RCPSPSolution
+    try:
+        from discrete_optimization.rcpsp.rcpsp_model import RCPSPSolution, RCPSPModel
+    except Exception as e:
+        print("install discreteopt standalone, "
+              "https://github.com/airbus/discrete-optimization, pip install --editable .")
+        raise ImportError("Missing discrete opt library")
     nb_tasks = len(dur)
     tasks_list = list(range(nb_tasks))
     successors = {i: [] for i in tasks_list}
@@ -299,7 +304,7 @@ def make_feasible_cpsat(data):
     return cpsat_result
 
 
-def make_feasible_sgs(data):
+def make_feasible_sgs(data, just_dummy_version: bool=False):
     try:
         from discrete_optimization.rcpsp.rcpsp_model import RCPSPSolution
     except Exception as e:
@@ -337,13 +342,16 @@ def make_feasible_sgs(data):
             data.con.view(*data.con_shape).data.cpu().detach().numpy(),
             data.reference_makespan
         )
-        do_model, dummy_solution = build_rcpsp_model(t2t, dur, r2t, rc, ref_makespan)
         xorig = np.around(data.out[len(rc):, 0].cpu().detach().numpy(), decimals=0).astype(int)
-        sorted_index = np.argsort(xorig)
-        perm = (sorted_index - 1)
-        perm = [p for p in perm if p != -1 and p != len(xorig) - 2]
         cur_time = perf_counter()
-        sol = RCPSPSolution(problem=do_model, rcpsp_permutation=perm)
+        do_model, dummy_solution = build_rcpsp_model(t2t, dur, r2t, rc, ref_makespan)
+        if just_dummy_version:
+            sol = dummy_solution
+        else:
+            sorted_index = np.argsort(xorig)
+            perm = (sorted_index - 1)
+            perm = [p for p in perm if p != -1 and p != len(xorig) - 2]
+            sol = RCPSPSolution(problem=do_model, rcpsp_permutation=perm)
         makespan = sol.get_max_end_time()
         feasible_solution = [sol.get_start_time(t) for t in do_model.tasks_list]
         print("Makespan GNN ", max(xorig+dur))
@@ -456,13 +464,22 @@ def script_gpd():
     # writer = SummaryWriter(f's3://iooda-gnn4rcpsp-bucket/tensorboard_logs/{run_id}')
     # writer = SummaryWriter(f'../tensorboard_logs/{run_id}')
     writer = None
+    from functools import partial
     result = test(test_loader=test_loader,
                   test_list=test_list,
                   model=model,
                   device=device,
                   writer=writer,
-                  compute_feasible_schedule_provider=make_feasible_sgs)
+                  compute_feasible_schedule_provider=partial(make_feasible_sgs, just_dummy_version=False))
     with open(f'../cp_solutions/inference_vs_sgspostpro_{run_id}.json', 'w') as jsonfile:
+        json.dump(result, jsonfile, indent=2)
+    result = test(test_loader=test_loader,
+                  test_list=test_list,
+                  model=model,
+                  device=device,
+                  writer=writer,
+                  compute_feasible_schedule_provider=partial(make_feasible_sgs, just_dummy_version=True))
+    with open(f'../cp_solutions/inference_vs_dummysgs_{run_id}.json', 'w') as jsonfile:
         json.dump(result, jsonfile, indent=2)
 
 
@@ -481,7 +498,11 @@ def script_ftk():
     # writer = SummaryWriter(f's3://iooda-gnn4rcpsp-bucket/tensorboard_logs/{run_id}')
     # writer = SummaryWriter(f'../tensorboard_logs/{run_id}')
     writer = None
-    result = test(test_loader=test_loader, test_list=test_list, model=model, device=device, writer=writer)
+    result = test(test_loader=test_loader,
+                  test_list=test_list,
+                  model=model,
+                  device=device,
+                  writer=writer)
     with open(f'../cp_solutions/inference_vs_cpsat_{run_id}.json', 'w') as jsonfile:
         json.dump(result, jsonfile, indent=2)
 
