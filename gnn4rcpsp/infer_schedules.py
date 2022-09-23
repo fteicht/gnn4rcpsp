@@ -641,4 +641,4 @@ def script_ftk():
 
 if __name__ == "__main__":
     script_gpd()
-    # script_ftk()
+    script_ftk()
