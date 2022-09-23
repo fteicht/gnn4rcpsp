@@ -1,8 +1,10 @@
 import datetime
 from csv import writer
 from time import perf_counter
+from typing import List
 
 import torch
+from docplex.cp.modeler import max_of
 from ortools.sat.python import cp_model
 from torch_geometric.data import DataLoader
 
@@ -223,11 +225,11 @@ def solve_with_discreteoptim(
             bench_id += 1
 
 
-# TODO : finish implementation
 def solve_with_docplex(data_list, device, outfile: str, time_out=25):
     # dirty imports...
+
     from docplex.cp.expression import interval_var
-    from docplex.cp.model import CpoModel
+    from docplex.cp.model import CpoIntervalVar, CpoModel, CpoVariable
     from docplex.cp.modeler import end_before_start, end_of, minimize, pulse
     from docplex.cp.solution import CpoSolveResult
     from docplex.cp.solver.cpo_callback import (
@@ -240,9 +242,11 @@ def solve_with_docplex(data_list, device, outfile: str, time_out=25):
     bench_id = 0
 
     class CustomCallback(CpoCallback):
-        def __init__(self):
+        def __init__(self, vars_of_interest: List[CpoIntervalVar]):
             self.list_solutions = []
+            self.list_makespan = []
             self.list_times = []
+            self._vars = vars_of_interest
 
         def invoke(self, solver, event, sres: CpoSolveResult):
             """Notify the callback about a solver event.
@@ -257,12 +261,14 @@ def solve_with_docplex(data_list, device, outfile: str, time_out=25):
                 sres:   Solver data, object of class :class:`~docplex.cp.solution.CpoSolveResult`
             """
             if event == EVENT_SOLUTION:
-                pass
+                t = perf_counter()
+                starts = [sres.get_var_solution(v).get_start() for v in self._vars]
+                self.list_solutions += [starts]
+                self.list_makespan += [max(starts)]
+                self.list_times += [t]
 
     for batch_idx, data_batch in enumerate(data_loader):
-
         data_batch.to(device)
-
         for data in data_batch.to_data_list():
             print("Solving bench {}/{} ...".format(bench_id, len(data_list) - 1))
 
@@ -278,7 +284,7 @@ def solve_with_docplex(data_list, device, outfile: str, time_out=25):
             # Create task interval variables
             CAPACITIES = [int(rc[i]) for i in range(len(rc))]
             tasks = [
-                interval_var(name="T{}".format(i + 1), size=dur[i])
+                interval_var(name="T{}".format(i + 1), size=int(dur[i]))
                 for i in range(len(dur))
             ]
             # Add precedence constraints
@@ -299,11 +305,28 @@ def solve_with_docplex(data_list, device, outfile: str, time_out=25):
                 for r in range(len(rc))
             )
             # Minimize end of all tasks
-            mdl.add(minimize(max(end_of(t) for t in tasks)))
+            mdl.add(minimize(max_of(end_of(t) for t in tasks)))
+            cll = CustomCallback(vars_of_interest=tasks)
+            mdl.add_solver_callback(cll)
+            start_time = perf_counter()
             result: CpoSolveResult = mdl.solve(
                 execfile="/Applications/CPLEX_Studio201/cpoptimizer/bin/x86-64_osx/cpoptimizer",
                 TimeLimit=time_out,
-            )  # TODO : add callback, print in the outputfile..
+                trace_cpo=False,
+                trace_log=False,
+                verbose=False,
+            )
+            with open(outfile, "a") as f_object:
+                writer_object = writer(f_object)
+                for starts, makespan, time in zip(
+                    cll.list_solutions, cll.list_makespan, cll.list_times
+                ):
+                    writer_object.writerow(
+                        [bench_id, time - start_time, max(ref_makespan), makespan]
+                        + [int(st) for st in starts]
+                    )
+                f_object.close()
+            bench_id += 1
 
 
 def run_cp_sat_computations():
@@ -334,13 +357,26 @@ def run_cp_from_discrete_optimisation(
     )
 
 
-def run_chuffed_computations():
+def run_minizinc_chuffed_computations():
     run_cp_from_discrete_optimisation(CPSolverName.CHUFFED)
 
 
-def run_cpopt_computations():
+def run_minizinc_cpopt_computations():
     run_cp_from_discrete_optimisation(CPSolverName.CPOPT)
 
 
+def run_pure_cpopt_computations():
+    data_list = torch.load("../torch_folder/data_list.tch")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    run_id = timestamp = datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    print(f"Run ID: {run_id}")
+    solve_with_docplex(
+        data_list=data_list,
+        device=device,
+        outfile="{}_solutions_{}.csv".format("pure_cpo", run_id),
+        time_out=25,
+    )
+
+
 if __name__ == "__main__":
-    pass
+    run_pure_cpopt_computations()
