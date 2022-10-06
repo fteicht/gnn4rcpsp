@@ -247,6 +247,12 @@ class SchedulingExecutor:
                 best_next_start,
                 worst_expected_schedule,
             ) = self.next_tasks_hindsight(rcpsp, running_tasks)
+        elif self._mode == ExecutionMode.REACTIVE:
+            (
+                best_tasks,
+                best_next_start,
+                worst_expected_schedule,
+            ) = self.next_tasks_reactive(rcpsp, running_tasks)
 
         # Return the best next tasks and the worst schedule in term of makespan
         # among the scenario schedules that feature those best next tasks to start next
@@ -421,6 +427,10 @@ class SchedulingExecutor:
 
         if self._scheduler == Scheduler.CPSAT:
             return self.compute_schedule_cpsat(
+                rcpsp, t2t, dur, r2t, rc, xorig, starts_hint
+            )
+        elif self._scheduler == Scheduler.SGS:
+            return self.compute_schedule_sgs(
                 rcpsp, t2t, dur, r2t, rc, xorig, starts_hint
             )
 
