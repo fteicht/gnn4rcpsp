@@ -1,33 +1,32 @@
+import os
+from collections import defaultdict, namedtuple
 from copy import deepcopy
 from enum import Enum
-import os
+from time import perf_counter
 from typing import Dict, List, Set, Tuple, Union
+
 import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+from graph import Graph
+from infer_schedules import build_rcpsp_model
 from matplotlib.collections import PatchCollection
 from matplotlib.patches import Polygon as pp
-import torch
-import numpy as np
-from time import perf_counter
-from collections import defaultdict, namedtuple
-from ortools.sat.python import cp_model
 from models import ResTransformer
+from ortools.sat.python import cp_model
 from skdecide.discrete_optimization.rcpsp.parser.rcpsp_parser import parse_file
 from skdecide.discrete_optimization.rcpsp.rcpsp_model import (
-    UncertainRCPSPModel,
-    RCPSPModel,
-    RCPSPSolution,
     MethodBaseRobustification,
     MethodRobustification,
+    RCPSPModel,
+    RCPSPSolution,
+    UncertainRCPSPModel,
     create_poisson_laws,
 )
 from skdecide.discrete_optimization.rcpsp.rcpsp_utils import (
     compute_nice_resource_consumption,
 )
-from graph import Graph
-
-import matplotlib.pyplot as plt
-
-from infer_schedules import build_rcpsp_model
 
 CPSAT_TIME_LIMIT = 10  # 10 s
 
@@ -509,6 +508,9 @@ class SchedulingExecutor:
         perm = sorted_index - 1
         perm = [p for p in perm if p != -1 and p != len(xorig) - 2]
         sol = RCPSPSolution(problem=do_model, rcpsp_permutation=perm)
+        sol.generate_schedule_from_permutation_serial_sgs_2(
+            current_t=0, completed_tasks={}, scheduled_tasks_start_times=starts_hint
+        )
         makespan = sol.get_max_end_time()
         feasible_solution = [sol.get_start_time(t) for t in do_model.tasks_list]
         return (
@@ -723,7 +725,14 @@ if __name__ == "__main__":
             map_location=device,
         )
     )
-    executor = SchedulingExecutor(rcpsp=rcpsp, model=model, device=device, samples=10)
+    executor = SchedulingExecutor(
+        rcpsp=rcpsp,
+        model=model,
+        device=device,
+        scheduler=Scheduler.SGS,
+        mode=ExecutionMode.REACTIVE,
+        samples=10,
+    )
 
     executed_schedule, current_time = executor.reset()
     makespan = None
