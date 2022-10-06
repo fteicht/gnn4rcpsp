@@ -1,4 +1,5 @@
 from copy import deepcopy
+from enum import Enum
 import os
 from typing import Dict, List, Set, Tuple, Union
 import matplotlib
@@ -26,9 +27,21 @@ from graph import Graph
 
 import matplotlib.pyplot as plt
 
+from infer_schedules import build_rcpsp_model
+
 CPSAT_TIME_LIMIT = 10  # 10 s
 
 Rectangle = namedtuple("Rectangle", "xmin ymin xmax ymax")
+
+
+class Scheduler(Enum):
+    CPSAT = 1
+    SGS = 2
+
+
+class ExecutionMode(Enum):
+    REACTIVE = 1
+    HINDSIGHT = 2
 
 
 class SchedulingExecutor:
@@ -37,11 +50,15 @@ class SchedulingExecutor:
         rcpsp: RCPSPModel,
         model: torch.nn.Module,
         device: torch.device,
+        scheduler: Scheduler,
+        mode: ExecutionMode,
         samples: int = 100,
     ) -> None:
         self._rcpsp = rcpsp
         self._model = model
         self._device = device
+        self._scheduler = scheduler
+        self._mode = mode
         self._poisson_laws = create_poisson_laws(
             base_rcpsp_model=self._rcpsp,
             range_around_mean_resource=1,
@@ -225,6 +242,42 @@ class SchedulingExecutor:
             name_task=name_task,
         )
 
+        if self._mode == ExecutionMode.HINDSIGHT:
+            (
+                best_tasks,
+                best_next_start,
+                worst_expected_schedule,
+            ) = self.next_tasks_hindsight(rcpsp, running_tasks)
+
+        # Return the best next tasks and the worst schedule in term of makespan
+        # among the scenario schedules that feature those best next tasks to start next
+        return (
+            best_tasks - running_tasks,
+            best_next_start + current_time,
+            makespan,
+            RCPSPSolution(
+                problem=executed_rcpsp,
+                rcpsp_schedule={
+                    task: {
+                        "start_time": worst_expected_schedule[task] + current_time,
+                        "end_time": worst_expected_schedule[task]
+                        + current_time
+                        + int(  # in case the max() below returns a numpy type
+                            max(
+                                mode["duration"]
+                                for mode in rcpsp.mode_details[task].values()
+                            )
+                        ),
+                    }
+                    for task in rcpsp.mode_details.keys()
+                    if task != -1 and task not in running_tasks
+                },
+                rcpsp_permutation=[],
+                standardised_permutation=[],
+            ),
+        )
+
+    def next_tasks_hindsight(self, rcpsp, running_tasks):
         # Make the "remaining" RCPSP uncertain
         uncertain_rcpsp = UncertainRCPSPModel(
             base_rcpsp_model=rcpsp,
@@ -322,33 +375,29 @@ class SchedulingExecutor:
                 best_next_start = solution_makespan_date[2]
                 best_tasks = tasks
 
-        # Return the best next tasks and the worst schedule in term of makespan
-        # among the scenario schedules that feature those best next tasks to start next
-        return (
-            best_tasks - running_tasks,
-            best_next_start + current_time,
-            makespan,
-            RCPSPSolution(
-                problem=executed_rcpsp,
-                rcpsp_schedule={
-                    task: {
-                        "start_time": worst_expected_schedule[task] + current_time,
-                        "end_time": worst_expected_schedule[task]
-                        + current_time
-                        + int(  # in case the max() below returns a numpy type
-                            max(
-                                mode["duration"]
-                                for mode in rcpsp.mode_details[task].values()
-                            )
-                        ),
-                    }
-                    for task in rcpsp.mode_details.keys()
-                    if task != -1 and task not in running_tasks
-                },
-                rcpsp_permutation=[],
-                standardised_permutation=[],
-            ),
+        return best_tasks, best_next_start, worst_expected_schedule
+
+    def next_tasks_reactive(self, rcpsp, running_tasks):
+        starts_hint = {-1: 0}
+        starts_hint.update({task: 0 for task in running_tasks})
+        status, _, feasible_solution = self.compute_schedule(
+            rcpsp, starts_hint=starts_hint
         )
+        if status == cp_model.INFEASIBLE:
+            raise RuntimeError("Infeasible remaining RCPSP.")
+        elif status == cp_model.MODEL_INVALID:
+            raise RuntimeError("Invalid CPSAT model.")
+        # Extract the next tasks to start
+        tasks_to_start = set()
+        date_to_start = float("inf")
+        for task, start in feasible_solution.items():
+            if task != -1 and task not in running_tasks:
+                if start < date_to_start:
+                    tasks_to_start = set([task])
+                    date_to_start = start
+                elif start == date_to_start:
+                    tasks_to_start.add(task)
+        return tasks_to_start, date_to_start, feasible_solution
 
     def compute_schedule(
         self, rcpsp: RCPSPModel, starts_hint: Dict[int, int] = None
@@ -371,6 +420,12 @@ class SchedulingExecutor:
             data.out[len(rc) :, 0].cpu().detach().numpy(), decimals=0
         ).astype(int)
 
+        if self._scheduler == Scheduler.CPSAT:
+            return self.compute_schedule_cpsat(
+                rcpsp, t2t, dur, r2t, rc, xorig, starts_hint
+            )
+
+    def compute_schedule_cpsat(self, rcpsp, t2t, dur, r2t, rc, xorig, starts_hint):
         horizon_start = int(max(xorig + dur))
         current_horizon = horizon_start
         curt = perf_counter()
@@ -447,6 +502,20 @@ class SchedulingExecutor:
                 current_horizon = int(1.05 * current_horizon)
 
         return (status, float("inf"), {})
+
+    def compute_schedule_sgs(self, rcpsp, t2t, dur, r2t, rc, xorig, starts_hint):
+        do_model, _ = build_rcpsp_model(t2t, dur, r2t, rc)
+        sorted_index = np.argsort(xorig)
+        perm = sorted_index - 1
+        perm = [p for p in perm if p != -1 and p != len(xorig) - 2]
+        sol = RCPSPSolution(problem=do_model, rcpsp_permutation=perm)
+        makespan = sol.get_max_end_time()
+        feasible_solution = [sol.get_start_time(t) for t in do_model.tasks_list]
+        return (
+            cp_model.FEASIBLE,
+            makespan,
+            {t: feasible_solution[i] for i, t in enumerate(rcpsp.successors)},
+        )
 
     @staticmethod
     def plot_ressource_view_online(

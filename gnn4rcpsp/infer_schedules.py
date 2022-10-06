@@ -19,7 +19,7 @@ CONSTRAINT_MAKESPAN = True
 SEARCH_FOR_OPTIMALITY = False
 
 
-def build_rcpsp_model(t2t, dur, r2t, rc, ref_makespan):
+def build_rcpsp_model(t2t, dur, r2t, rc):
     try:
         from discrete_optimization.rcpsp.rcpsp_model import RCPSPModel, RCPSPSolution
     except Exception as e:
