@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from graph import Graph
-from infer_schedules import build_rcpsp_model
+from infer_schedules import build_rcpsp_model, build_rcpsp_model_skdecide
 from matplotlib.collections import PatchCollection
 from matplotlib.patches import Polygon as pp
 from models import ResTransformer
@@ -513,20 +513,31 @@ class SchedulingExecutor:
         return (status, float("inf"), {})
 
     def compute_schedule_sgs(self, rcpsp, t2t, dur, r2t, rc, xorig, starts_hint):
-        do_model, _ = build_rcpsp_model(t2t, dur, r2t, rc)
+        do_model, _ = build_rcpsp_model_skdecide(t2t, dur, r2t, rc)
+        xorig = xorig[:-1]
         sorted_index = np.argsort(xorig)
         perm = sorted_index - 1
         perm = [p for p in perm if p != -1 and p != len(xorig) - 2]
-        sol = RCPSPSolution(problem=do_model, rcpsp_permutation=perm)
+        sol = RCPSPSolution(
+            problem=do_model,
+            rcpsp_permutation=perm,
+            rcpsp_modes=[1 for i in range(len(xorig) - 2)],
+        )
         sol.generate_schedule_from_permutation_serial_sgs_2(
             current_t=0, completed_tasks={}, scheduled_tasks_start_times=starts_hint
         )
-        makespan = sol.get_max_end_time()
-        feasible_solution = [sol.get_start_time(t) for t in do_model.tasks_list]
+        makespan = do_model.evaluate(sol)["makespan"]
+        feasible_solution = {
+            t: sol.rcpsp_schedule[t]["start_time"] for t in sol.rcpsp_schedule
+        }
+        feasible_solution[max(feasible_solution) + 1] = feasible_solution[
+            max(feasible_solution)
+        ]
+        # reput the last strange task
         return (
             cp_model.FEASIBLE,
             makespan,
-            {t: feasible_solution[i] for i, t in enumerate(rcpsp.successors)},
+            {t: feasible_solution[t] for t in feasible_solution},
         )
 
     @staticmethod
@@ -729,7 +740,7 @@ if __name__ == "__main__":
     model = Net().to(device)
     model.load_state_dict(
         torch.load(
-            os.path.join(root_dir, "torch/model_ResTransformer_256_50000.tch"),
+            os.path.join(root_dir, "torch_folder/model_ResTransformer_256_50000.tch"),
             map_location=device,
         )
     )

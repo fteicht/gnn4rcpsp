@@ -59,6 +59,47 @@ def build_rcpsp_model(t2t, dur, r2t, rc):
     return model, dummy_solution
 
 
+def build_rcpsp_model_skdecide(t2t, dur, r2t, rc):
+    try:
+        from skdecide.discrete_optimization.rcpsp.rcpsp_model import (
+            RCPSPModel,
+            RCPSPSolution,
+        )
+    except Exception as e:
+        print(
+            "install discreteopt standalone, "
+            "https://github.com/airbus/discrete-optimization, pip install --editable ."
+        )
+        raise ImportError("Missing discrete opt library")
+    nb_tasks = len(dur) - 1
+    tasks_list = list(range(1, nb_tasks + 1))
+    successors = {i: [] for i in tasks_list}
+    mode_details = {
+        tasks_list[i]: {1: {"duration": int(dur[i])}} for i in range(nb_tasks)
+    }
+    nb_ressources = r2t.shape[0]
+    resources_list = [f"R{i}" for i in range(nb_ressources)]
+    resources = {resources_list[i]: int(rc[i]) for i in range(nb_ressources)}
+
+    for t in range(nb_tasks):
+        for p in range(nb_tasks):
+            if t2t[t][p] > 0:
+                successors[tasks_list[p]] += [tasks_list[t]]
+                # model.AddNoOverlap([intervals[t], intervals[p]])  # redundant
+    for t in range(nb_tasks):
+        for r in range(nb_ressources):
+            mode_details[tasks_list[t]][1][resources_list[r]] = int(r2t[r][t])
+    model = RCPSPModel(
+        resources=resources,
+        non_renewable_resources=[],
+        mode_details=mode_details,
+        successors=successors,
+        horizon=500,
+    )
+    dummy_solution = model.get_dummy_solution()
+    return model, dummy_solution
+
+
 def make_feasible_nlopt(data):
     def objective(xorig, x, dur, grad):
         v = np.array([x[i] - xorig[i] for i in range(len(x))])
