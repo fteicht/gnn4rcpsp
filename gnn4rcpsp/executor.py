@@ -720,7 +720,7 @@ class SchedulingExecutor:
 
 
 if __name__ == "__main__":
-    root_dir = os.path.dirname(os.path.dirname(__file__))
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     kobe_rcpsp_dir = os.path.join(root_dir, "kobe-rcpsp/data/rcpsp")
     rcpsp = parse_file(os.path.join(kobe_rcpsp_dir, "j30.sm/j301_1.sm"))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -729,9 +729,7 @@ if __name__ == "__main__":
     model = Net().to(device)
     model.load_state_dict(
         torch.load(
-            os.path.join(
-                root_dir, "../torch_folder/model_ResTransformer_256_50000.tch"
-            ),
+            os.path.join(root_dir, "torch/model_ResTransformer_256_50000.tch"),
             map_location=device,
         )
     )
