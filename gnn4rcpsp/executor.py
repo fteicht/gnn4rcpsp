@@ -245,12 +245,14 @@ class SchedulingExecutor:
             (
                 best_tasks,
                 best_next_start,
+                best_makespan,
                 worst_expected_schedule,
             ) = self.next_tasks_hindsight(rcpsp, running_tasks)
         elif self._mode == ExecutionMode.REACTIVE:
             (
                 best_tasks,
                 best_next_start,
+                best_makespan,
                 worst_expected_schedule,
             ) = self.next_tasks_reactive(rcpsp, running_tasks)
 
@@ -259,7 +261,7 @@ class SchedulingExecutor:
         return (
             best_tasks - running_tasks,
             best_next_start + current_time,
-            makespan,
+            best_makespan,
             RCPSPSolution(
                 problem=executed_rcpsp,
                 rcpsp_schedule={
@@ -380,12 +382,12 @@ class SchedulingExecutor:
                 best_next_start = solution_makespan_date[2]
                 best_tasks = tasks
 
-        return best_tasks, best_next_start, worst_expected_schedule
+        return best_tasks, best_next_start, best_makespan, worst_expected_schedule
 
     def next_tasks_reactive(self, rcpsp, running_tasks):
         starts_hint = {-1: 0}
         starts_hint.update({task: 0 for task in running_tasks})
-        status, _, feasible_solution = self.compute_schedule(
+        status, makespan, feasible_solution = self.compute_schedule(
             rcpsp, starts_hint=starts_hint
         )
         if status == cp_model.INFEASIBLE:
@@ -402,7 +404,7 @@ class SchedulingExecutor:
                     date_to_start = start
                 elif start == date_to_start:
                     tasks_to_start.add(task)
-        return tasks_to_start, date_to_start, feasible_solution
+        return tasks_to_start, date_to_start, makespan, feasible_solution
 
     def compute_schedule(
         self, rcpsp: RCPSPModel, starts_hint: Dict[int, int] = None
@@ -740,7 +742,7 @@ if __name__ == "__main__":
     model = Net().to(device)
     model.load_state_dict(
         torch.load(
-            os.path.join(root_dir, "torch_folder/model_ResTransformer_256_50000.tch"),
+            os.path.join(root_dir, "torch/model_ResTransformer_256_50000.tch"),
             map_location=device,
         )
     )
@@ -748,8 +750,8 @@ if __name__ == "__main__":
         rcpsp=rcpsp,
         model=model,
         device=device,
-        scheduler=Scheduler.SGS,
-        mode=ExecutionMode.REACTIVE,
+        scheduler=Scheduler.CPSAT,
+        mode=ExecutionMode.HINDSIGHT,
         samples=10,
     )
 
