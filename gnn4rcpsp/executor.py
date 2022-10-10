@@ -742,7 +742,7 @@ if __name__ == "__main__":
     model = Net().to(device)
     model.load_state_dict(
         torch.load(
-            os.path.join(root_dir, "torch/model_ResTransformer_256_50000.tch"),
+            os.path.join(root_dir, "torch_data/model_ResTransformer_256_50000.tch"),
             map_location=device,
         )
     )
@@ -750,8 +750,8 @@ if __name__ == "__main__":
         rcpsp=rcpsp,
         model=model,
         device=device,
-        scheduler=Scheduler.CPSAT,
-        mode=ExecutionMode.HINDSIGHT,
+        scheduler=Scheduler.SGS,
+        mode=ExecutionMode.REACTIVE,
         samples=10,
     )
 
