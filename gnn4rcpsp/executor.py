@@ -9,14 +9,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from graph import Graph
-from infer_schedules import build_rcpsp_model, build_rcpsp_model_skdecide
-from matplotlib.collections import PatchCollection
-from matplotlib.patches import Polygon as pp
-from models import ResTransformer
-from ortools.sat.python import cp_model
-from skdecide.discrete_optimization.rcpsp.parser.rcpsp_parser import parse_file
-from skdecide.discrete_optimization.rcpsp.rcpsp_model import (
+from discrete_optimization.rcpsp.rcpsp_model import (
     MethodBaseRobustification,
     MethodRobustification,
     RCPSPModel,
@@ -24,9 +17,14 @@ from skdecide.discrete_optimization.rcpsp.rcpsp_model import (
     UncertainRCPSPModel,
     create_poisson_laws,
 )
-from skdecide.discrete_optimization.rcpsp.rcpsp_utils import (
-    compute_nice_resource_consumption,
-)
+from discrete_optimization.rcpsp.rcpsp_parser import parse_file
+from discrete_optimization.rcpsp.rcpsp_utils import compute_nice_resource_consumption
+from graph import Graph
+from infer_schedules import build_rcpsp_model, build_rcpsp_model_skdecide
+from matplotlib.collections import PatchCollection
+from matplotlib.patches import Polygon as pp
+from models import ResTransformer
+from ortools.sat.python import cp_model
 
 CPSAT_TIME_LIMIT = 10  # 10 s
 
@@ -181,36 +179,36 @@ class SchedulingExecutor:
             front_tasks = front_tasks - set(executed_schedule.rcpsp_schedule.keys())
             front_tasks = front_tasks | running_tasks
 
-        initial_task = -1
+        initial_task = "source"
         initial_task_mode = {
             1: dict(duration=0, **{res: 0 for res in executed_rcpsp.resources.keys()})
         }
 
+        tasks_list = [initial_task]
+        non_executed_tasks = [
+            t
+            for t in executed_rcpsp.tasks_list
+            if t not in executed_schedule.rcpsp_schedule
+        ]
+        # running_tasks = list(running_tasks)
+        tasks_list = tasks_list + non_executed_tasks + list(running_tasks)
         # Create "remaining" RCPSP: keep all the non executed tasks plus the running ones
         mode_details = {
-            task: modes
-            for task, modes in executed_rcpsp.mode_details.items()
-            if task not in executed_schedule.rcpsp_schedule
+            task: deepcopy(executed_rcpsp.mode_details[task])
+            for task in non_executed_tasks
         }
         successors = {
-            task: succ
-            for task, succ in executed_rcpsp.successors.items()
-            if task not in executed_schedule.rcpsp_schedule
+            task: executed_rcpsp.successors[task] for task in non_executed_tasks
         }
         name_task = {
-            task: name
-            for task, name in executed_rcpsp.name_task.items()
-            if task not in executed_schedule.rcpsp_schedule
+            task: executed_rcpsp.name_task[task] for task in non_executed_tasks
         }
-
         running_tasks_modes = {
-            task: deepcopy(modes)
-            for task, modes in executed_rcpsp.mode_details.items()
-            if task in running_tasks
+            task: deepcopy(executed_rcpsp.mode_details[task]) for task in running_tasks
         }
-        for task, modes in running_tasks_modes.items():
-            for mode in modes.values():
-                mode["duration"] = (
+        for task in running_tasks_modes:
+            for mode in running_tasks_modes[task]:
+                running_tasks_modes[task][mode]["duration"] = (
                     executed_schedule.rcpsp_schedule[task]["end_time"] - current_time
                 )
         mode_details.update(running_tasks_modes)
@@ -233,6 +231,9 @@ class SchedulingExecutor:
         )
         rcpsp = RCPSPModel(
             resources=executed_rcpsp.resources,
+            tasks_list=tasks_list,
+            source_task=initial_task,
+            sink_task=executed_rcpsp.sink_task,  # sink remains the same.
             non_renewable_resources=executed_rcpsp.non_renewable_resources,
             mode_details=mode_details,
             successors=successors,
@@ -240,7 +241,10 @@ class SchedulingExecutor:
             horizon_multiplier=executed_rcpsp.horizon_multiplier,
             name_task=name_task,
         )
-
+        best_tasks = None
+        best_next_start = None
+        best_makespan = None
+        worst_expected_schedule = None
         if self._mode == ExecutionMode.HINDSIGHT:
             (
                 best_tasks,
@@ -277,7 +281,7 @@ class SchedulingExecutor:
                         ),
                     }
                     for task in rcpsp.mode_details.keys()
-                    if task != -1 and task not in running_tasks
+                    if task != "source" and task not in running_tasks
                 },
                 rcpsp_permutation=[],
                 standardised_permutation=[],
@@ -296,7 +300,7 @@ class SchedulingExecutor:
             uniform_law=True,
         )
 
-        starts_hint = {-1: 0}
+        starts_hint = {"source": 0}
         starts_hint.update({task: 0 for task in running_tasks})
 
         # Sample RCPSPs and choose the best next task to start on average
@@ -319,7 +323,7 @@ class SchedulingExecutor:
             tasks_to_start = set()
             date_to_start = float("inf")
             for task, start in feasible_solution.items():
-                if task != -1 and task not in running_tasks:
+                if task != "source" and task not in running_tasks:
                     if start < date_to_start:
                         tasks_to_start = set([task])
                         date_to_start = start
@@ -385,7 +389,7 @@ class SchedulingExecutor:
         return best_tasks, best_next_start, best_makespan, worst_expected_schedule
 
     def next_tasks_reactive(self, rcpsp, running_tasks):
-        starts_hint = {-1: 0}
+        starts_hint = {"source": 0}
         starts_hint.update({task: 0 for task in running_tasks})
         status, makespan, feasible_solution = self.compute_schedule(
             rcpsp, starts_hint=starts_hint
@@ -398,7 +402,7 @@ class SchedulingExecutor:
         tasks_to_start = set()
         date_to_start = float("inf")
         for task, start in feasible_solution.items():
-            if task != -1 and task not in running_tasks:
+            if task != "source" and task not in running_tasks:
                 if start < date_to_start:
                     tasks_to_start = set([task])
                     date_to_start = start
@@ -515,15 +519,18 @@ class SchedulingExecutor:
         return (status, float("inf"), {})
 
     def compute_schedule_sgs(self, rcpsp, t2t, dur, r2t, rc, xorig, starts_hint):
-        do_model, _ = build_rcpsp_model_skdecide(t2t, dur, r2t, rc)
-        xorig = xorig[:-1]
+        do_model = rcpsp
         sorted_index = np.argsort(xorig)
-        perm = sorted_index - 1
-        perm = [p for p in perm if p != -1 and p != len(xorig) - 2]
+        tasks = [do_model.tasks_list[j] for j in sorted_index]
+        perm = [
+            do_model.index_task_non_dummy[t]
+            for t in tasks
+            if t in do_model.index_task_non_dummy
+        ]
         sol = RCPSPSolution(
             problem=do_model,
             rcpsp_permutation=perm,
-            rcpsp_modes=[1 for i in range(len(xorig) - 2)],
+            rcpsp_modes=[1 for i in range(len(perm))],
         )
         sol.generate_schedule_from_permutation_serial_sgs_2(
             current_t=0, completed_tasks={}, scheduled_tasks_start_times=starts_hint
@@ -532,10 +539,6 @@ class SchedulingExecutor:
         feasible_solution = {
             t: sol.rcpsp_schedule[t]["start_time"] for t in sol.rcpsp_schedule
         }
-        feasible_solution[max(feasible_solution) + 1] = feasible_solution[
-            max(feasible_solution)
-        ]
-        # reput the last strange task
         return (
             cp_model.FEASIBLE,
             makespan,
@@ -553,9 +556,7 @@ class SchedulingExecutor:
         ax=None,
         ax_xlim=None,
     ):
-        modes_extended = deepcopy(rcpsp_sol.rcpsp_modes)
-        modes_extended.insert(0, 1)
-        modes_extended.append(1)
+        modes_dict = rcpsp_model.build_mode_dict(rcpsp_sol.rcpsp_modes)
         if list_resource is None:
             list_resource = rcpsp_model.resources_list
         if ax is None:
@@ -567,18 +568,16 @@ class SchedulingExecutor:
         labels_ax = {i: [] for i in range(len(list_resource))}
         sorted_activities = sorted(
             rcpsp_sol.rcpsp_schedule,
-            key=lambda x: rcpsp_sol.rcpsp_schedule[x]["start_time"],
+            key=lambda x: rcpsp_sol.get_start_time(x),
         )
         for j in sorted_activities:
-            time_start = rcpsp_sol.rcpsp_schedule[j]["start_time"]
-            time_end = rcpsp_sol.rcpsp_schedule[j]["end_time"]
+            time_start = rcpsp_sol.get_start_time(j)
+            time_end = rcpsp_sol.get_end_time(j)
             for i in range(len(list_resource)):
-                cons = rcpsp_model.mode_details[j][modes_extended[j - 1]][
-                    list_resource[i]
-                ]
+                cons = rcpsp_model.mode_details[j][modes_dict[j]][list_resource[i]]
                 if cons == 0:
                     continue
-                bound = rcpsp_model.resources[list_resource[i]]
+                bound = rcpsp_model.get_max_resource_capacity(list_resource[i])
                 for k in range(0, bound):
                     # polygon = Polygon([(time_start, k), (time_end, k), (time_end, k+cons),
                     #                    (time_start, k+cons), (time_start, k)])
@@ -671,21 +670,18 @@ class SchedulingExecutor:
         if fig is None or ax is None:
             fig, ax = plt.subplots(1, figsize=(10, 5))
             ax.set_title("Gantt Task")
-        tasks = sorted(rcpsp_model.mode_details.keys())
-        nb_task = len(tasks)
-        sorted_task_by_start = sorted(
-            rcpsp_sol.rcpsp_schedule,
-            key=lambda x: 100000 * rcpsp_sol.rcpsp_schedule[x]["start_time"] + x,
-        )
+        tasks = rcpsp_model.tasks_list
+        nb_task = rcpsp_model.n_jobs
         sorted_task_by_end = sorted(
             rcpsp_sol.rcpsp_schedule,
-            key=lambda x: 100000 * rcpsp_sol.rcpsp_schedule[x]["end_time"] + x,
+            key=lambda x: 100000 * rcpsp_sol.get_end_time(x)
+            + rcpsp_model.index_task[x],
         )
         max_time = rcpsp_sol.rcpsp_schedule[sorted_task_by_end[-1]]["end_time"]
         min_time = rcpsp_sol.rcpsp_schedule[sorted_task_by_end[0]]["start_time"]
         patches = []
         for j in range(nb_task):
-            nb_colors = len(tasks) // 2
+            nb_colors = nb_task // 2
             colors = plt.cm.get_cmap("hsv", nb_colors)
             box = [
                 (j - 0.25, rcpsp_sol.rcpsp_schedule[tasks[j]]["start_time"]),
@@ -742,7 +738,7 @@ if __name__ == "__main__":
     model = Net().to(device)
     model.load_state_dict(
         torch.load(
-            os.path.join(root_dir, "torch/model_ResTransformer_256_50000.tch"),
+            os.path.join(root_dir, "torch_folder/model_ResTransformer_256_50000.tch"),
             map_location=device,
         )
     )
@@ -750,7 +746,7 @@ if __name__ == "__main__":
         rcpsp=rcpsp,
         model=model,
         device=device,
-        scheduler=Scheduler.CPSAT,
+        scheduler=Scheduler.SGS,
         mode=ExecutionMode.HINDSIGHT,
         samples=10,
     )
@@ -773,6 +769,7 @@ if __name__ == "__main__":
             expected_schedule,
         ) = executor.next_tasks(executed_schedule, current_time)
         print("Best tasks to start at time {}: {}".format(next_start, list(next_tasks)))
+
         current_time, executed_schedule, stop = executor.progress(
             next_tasks, next_start, expected_schedule
         )
