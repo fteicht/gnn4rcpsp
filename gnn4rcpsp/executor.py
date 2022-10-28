@@ -404,6 +404,9 @@ class SchedulingExecutor:
                     date_to_start = start
                 elif start == date_to_start:
                     tasks_to_start.add(task)
+        print(
+            f"Starting tasks {tasks_to_start} at time {date_to_start} with makespan {makespan}; feasible solution: {feasible_solution}"
+        )
         return tasks_to_start, date_to_start, makespan, feasible_solution
 
     def compute_schedule(
@@ -750,7 +753,7 @@ if __name__ == "__main__":
         rcpsp=rcpsp,
         model=model,
         device=device,
-        scheduler=Scheduler.SGS,
+        scheduler=Scheduler.CPSAT,
         mode=ExecutionMode.REACTIVE,
         samples=10,
     )

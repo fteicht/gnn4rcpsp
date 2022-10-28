@@ -651,8 +651,8 @@ def script_gpd():
 
 
 def script_ftk():
-    data_list = torch.load("../torch/data_list.tch")
-    train_list = torch.load("../torch/train_list.tch")
+    data_list = torch.load("../torch_data/data_list.tch")
+    train_list = torch.load("../torch_data/train_list.tch")
     test_list = list(set(range(len(data_list))) - set(train_list))
     test_loader = DataLoader(
         [data_list[d] for d in test_list], batch_size=1, shuffle=False
