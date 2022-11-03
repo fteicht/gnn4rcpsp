@@ -475,7 +475,7 @@ def make_feasible_sgs(data, just_dummy_version: bool = False):
             data.out[len(rc) :, 0].cpu().detach().numpy(), decimals=0
         ).astype(int)
         cur_time = perf_counter()
-        do_model, dummy_solution = build_rcpsp_model(t2t, dur, r2t, rc, ref_makespan)
+        do_model, dummy_solution = build_rcpsp_model(t2t, dur, r2t, rc)
         if just_dummy_version:
             sol = dummy_solution
         else:
