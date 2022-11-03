@@ -662,7 +662,7 @@ def script_ftk():
     # Net = ResGINE
     model = Net().to(device)
     model.load_state_dict(
-        torch.load("../torch_folder/model_ResTransformer_256_50000.tch")
+        torch.load("../torch_data/model_ResTransformer_256_50000.tch", map_location=torch.device(device))
     )
     run_id = timestamp = datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S")
     print(f"Run ID: {run_id}")
