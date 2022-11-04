@@ -340,19 +340,11 @@ class SchedulingExecutor:
             date_to_start = None
             for mk in lmk:
                 solution = mk[0]
-                if (
-                    max(
-                        solution[task]
-                        + max(
-                            mode["duration"]
-                            for mode in rcpsp.mode_details[task].values()
-                        )
-                        for task in solution
-                    )
-                    > highest_makespan
-                ):
+                mkspan = mk[1]
+                if mkspan >= highest_makespan:
                     worst_solution = solution
                     date_to_start = mk[2]
+                    highest_makespan = mk[1]
             scenarios[ts] = (
                 worst_solution,
                 np.mean([mk[1] for mk in lmk]),
@@ -567,14 +559,23 @@ class SchedulingExecutor:
             for t in tasks
             if t in do_model.index_task_non_dummy
         ]
-        sol = RCPSPSolution(
-            problem=do_model,
-            rcpsp_permutation=perm,
-            rcpsp_modes=[1 for i in range(len(perm))],
-        )
-        sol.generate_schedule_from_permutation_serial_sgs_2(
-            current_t=0, completed_tasks={}, scheduled_tasks_start_times=starts_hint
-        )
+        if do_model.n_jobs == 2:
+            sol = RCPSPSolution(problem=do_model,
+                                rcpsp_schedule={t: {"start_time": 0,
+                                                    "end_time": 0+do_model.mode_details[t][1]["duration"]}
+                                                for t in do_model.tasks_list},
+                                rcpsp_modes=[1 for i in range(len(perm))])
+        else:
+            sol = RCPSPSolution(
+                problem=do_model,
+                rcpsp_permutation=perm,
+                rcpsp_modes=[1 for i in range(len(perm))],
+            )
+            assert do_model.n_jobs > 2
+            sol.generate_schedule_from_permutation_serial_sgs_2(
+                current_t=0, completed_tasks={}, scheduled_tasks_start_times=starts_hint
+            )
+
         makespan = do_model.evaluate(sol)["makespan"]
         feasible_solution = {
             t: sol.rcpsp_schedule[t]["start_time"] for t in sol.rcpsp_schedule
@@ -776,9 +777,16 @@ if __name__ == "__main__":
     Net = ResTransformer
     # Net = ResGINE
     model = Net().to(device)
+    real_path = None
+    path1 = os.path.join(root_dir, "torch_folder/model_ResTransformer_256_50000.tch")
+    path2 = os.path.join(root_dir, "torch_data/model_ResTransformer_256_50000.tch")
+    if os.path.exists(path1):
+        real_path = path1
+    if os.path.exists(path2):
+        real_path = path2
     model.load_state_dict(
         torch.load(
-            os.path.join(root_dir, "torch_data/model_ResTransformer_256_50000.tch"),
+            real_path,
             map_location=device,
         )
     )
