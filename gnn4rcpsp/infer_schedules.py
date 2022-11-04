@@ -475,7 +475,7 @@ def make_feasible_sgs(data, just_dummy_version: bool = False):
             data.out[len(rc) :, 0].cpu().detach().numpy(), decimals=0
         ).astype(int)
         cur_time = perf_counter()
-        do_model, dummy_solution = build_rcpsp_model(t2t, dur, r2t, rc, ref_makespan)
+        do_model, dummy_solution = build_rcpsp_model(t2t, dur, r2t, rc)
         if just_dummy_version:
             sol = dummy_solution
         else:
@@ -599,8 +599,8 @@ def test(
 
 
 def script_gpd():
-    data_list = torch.load("../torch_folder/data_list.tch")
-    train_list = torch.load("../torch_folder/train_list.tch")
+    data_list = torch.load("../torch_data/data_list.tch")
+    train_list = torch.load("../torch_data/train_list.tch")
     test_list = list(set(range(len(data_list))) - set(train_list))
     test_loader = DataLoader(
         [data_list[d] for d in test_list], batch_size=1, shuffle=False
@@ -612,7 +612,7 @@ def script_gpd():
     # model.load_state_dict(torch.load('saved_models/ResTransformer-256-50000/model_49900.tch'))
     model.load_state_dict(
         torch.load(
-            "../torch_folder/model_ResTransformer_256_50000.tch", map_location=device
+            "../torch_data/model_ResTransformer_256_50000.tch", map_location=device
         )
     )
     run_id = timestamp = datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S")
@@ -651,8 +651,8 @@ def script_gpd():
 
 
 def script_ftk():
-    data_list = torch.load("../torch/data_list.tch")
-    train_list = torch.load("../torch/train_list.tch")
+    data_list = torch.load("../torch_data/data_list.tch")
+    train_list = torch.load("../torch_data/train_list.tch")
     test_list = list(set(range(len(data_list))) - set(train_list))
     test_loader = DataLoader(
         [data_list[d] for d in test_list], batch_size=1, shuffle=False
@@ -662,7 +662,7 @@ def script_ftk():
     # Net = ResGINE
     model = Net().to(device)
     model.load_state_dict(
-        torch.load("../torch_folder/model_ResTransformer_256_50000.tch")
+        torch.load("../torch_data/model_ResTransformer_256_50000.tch", map_location=torch.device(device))
     )
     run_id = timestamp = datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S")
     print(f"Run ID: {run_id}")

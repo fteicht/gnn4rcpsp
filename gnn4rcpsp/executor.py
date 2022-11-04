@@ -408,6 +408,9 @@ class SchedulingExecutor:
                     date_to_start = start
                 elif start == date_to_start:
                     tasks_to_start.add(task)
+        print(
+            f"Starting tasks {tasks_to_start} at time {date_to_start} with makespan {makespan}; feasible solution: {feasible_solution}"
+        )
         return tasks_to_start, date_to_start, makespan, feasible_solution
 
     def compute_schedule(
@@ -499,18 +502,55 @@ class SchedulingExecutor:
             shift = min(xorig_list)
             xorig_list = [x - shift for x in xorig_list]
             for i, x in enumerate(xorig_list):
-                model.AddHint(starts[i], x)
+                if starts_hint is None or i not in starts_hint:
+                    model.AddHint(starts[i], x)
             # model._CpModel__model.solution_hint.vars.extend(list(range(len(dur))))
             # model._CpModel__model.solution_hint.values.extend(xorig.tolist())
             status = solver.Solve(model)
 
             if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
                 solution = [solver.Value(s) for s in starts]
-                shift = min(solution)
-                solution = [s - shift for s in solution]
+                # Compress the solution
+                starts_np = np.array(solution, dtype=np.int64)
+                ends_np = starts_np + np.array(dur, dtype=np.int64)
+                current_time = 0
+                ub = np.max(ends_np) * 10
+                while current_time < np.max(ends_np):
+                    masked_starts = (
+                        ((starts_np <= current_time) * ub)
+                        + (np.multiply(starts_np, starts_np > current_time))
+                    ).astype(int)
+                    next_start = np.amin(masked_starts)
+                    masked_ends = (
+                        (((ends_np <= current_time) + (starts_np > current_time)) * ub)
+                        + (
+                            np.multiply(
+                                ends_np,
+                                1
+                                - (
+                                    (ends_np <= current_time)
+                                    + (starts_np > current_time)
+                                ),
+                            )
+                        )
+                    ).astype(int)
+                    next_end = np.amin(masked_ends)
+                    if next_end == ub:
+                        starts_np[:] = np.array(
+                            [
+                                s - (next_start - current_time)
+                                if s >= current_time
+                                else s
+                                for s in starts_np
+                            ]
+                        )
+                    else:
+                        current_time = min(next_start, next_end)
+                solution = starts_np.tolist()
                 return (
                     status,
-                    solver.Value(makespan) - shift,
+                    # solver.Value(makespan),
+                    np.max(starts_np + np.array(dur, dtype=np.int64)),
                     {t: solution[i] for i, t in enumerate(rcpsp.successors)},
                 )
             else:
@@ -738,7 +778,7 @@ if __name__ == "__main__":
     model = Net().to(device)
     model.load_state_dict(
         torch.load(
-            os.path.join(root_dir, "torch_folder/model_ResTransformer_256_50000.tch"),
+            os.path.join(root_dir, "torch_data/model_ResTransformer_256_50000.tch"),
             map_location=device,
         )
     )
