@@ -99,7 +99,9 @@ def execute_schedule(bench_id, data):
                 )
                 stop = False
                 executed_schedule, current_time = executor.reset(sim_rcpsp=sample_rcpsp)
-                makespans[f"Scenario {scn}"][execution_mode] = {"expectations": []}
+                makespans[f"Scenario {scn}"][ExecutionModeNames[execution_mode]] = {
+                    "expectations": []
+                }
                 timer = perf_counter()
 
                 while not stop:
@@ -114,14 +116,16 @@ def execute_schedule(bench_id, data):
                         next_tasks, next_start, expected_schedule
                     )
 
-                    makespans[f"Scenario {scn}"][execution_mode]["expectations"].append(
-                        expected_makespan
-                    )
+                    makespans[f"Scenario {scn}"][ExecutionModeNames[execution_mode]][
+                        "expectations"
+                    ].append(expected_makespan)
 
-                makespans[f"Scenario {scn}"][execution_mode]["executed"] = current_time
-                makespans[f"Scenario {scn}"][execution_mode]["timing"] = (
-                    perf_counter() - timer
-                )
+                makespans[f"Scenario {scn}"][ExecutionModeNames[execution_mode]][
+                    "executed"
+                ] = current_time
+                makespans[f"Scenario {scn}"][ExecutionModeNames[execution_mode]][
+                    "timing"
+                ] = (perf_counter() - timer)
 
         batch_results[f"Benchmark {bench_id}"] = makespans
 
