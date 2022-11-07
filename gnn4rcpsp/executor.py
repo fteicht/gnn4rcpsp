@@ -37,9 +37,11 @@ class Scheduler(Enum):
 
 
 class ExecutionMode(Enum):
-    REACTIVE = 1
-    HINDSIGHT_LEX = 2  # Select first most appearing top tasks, then break tie by lowest average makespan
-    HINDSIGHT_DBP = 3  # Extract first potential best tasks, then reevaluate each of them on each scenario and select top tasks by lowest average makespan
+    REACTIVE_AVERAGE = 1
+    REACTIVE_WORST = 2
+    REACTIVE_BEST = 3
+    HINDSIGHT_LEX = 4  # Select first most appearing top tasks, then break tie by lowest average makespan
+    HINDSIGHT_DBP = 5  # Extract first potential best tasks, then reevaluate each of them on each scenario and select top tasks by lowest average makespan
 
 
 class SchedulingExecutor:
@@ -235,7 +237,7 @@ class SchedulingExecutor:
                 if task in running_tasks
             }
         )
-        rcpsp = RCPSPModel(
+        remaining_rcpsp = RCPSPModel(
             resources=executed_rcpsp.resources,
             tasks_list=tasks_list,
             source_task=initial_task,
@@ -246,6 +248,15 @@ class SchedulingExecutor:
             horizon=executed_rcpsp.horizon - current_time,
             horizon_multiplier=executed_rcpsp.horizon_multiplier,
             name_task=name_task,
+        )
+        rcpsp = UncertainRCPSPModel(
+            base_rcpsp_model=remaining_rcpsp,
+            poisson_laws={
+                task: laws
+                for task, laws in self._poisson_laws.items()
+                if task in remaining_rcpsp.mode_details
+            },
+            uniform_law=True,
         )
         best_tasks = None
         best_next_start = None
@@ -261,7 +272,11 @@ class SchedulingExecutor:
                 best_makespan,
                 worst_expected_schedule,
             ) = self.next_tasks_hindsight(rcpsp, running_tasks)
-        elif self._mode == ExecutionMode.REACTIVE:
+        elif (
+            self._mode == ExecutionMode.REACTIVE_AVERAGE
+            or self._mode == ExecutionMode.REACTIVE_WORST
+            or self._mode == ExecutionMode.REACTIVE_BEST
+        ):
             (
                 best_tasks,
                 best_next_start,
@@ -285,11 +300,11 @@ class SchedulingExecutor:
                         + int(  # in case the max() below returns a numpy type
                             max(
                                 mode["duration"]
-                                for mode in rcpsp.mode_details[task].values()
+                                for mode in remaining_rcpsp.mode_details[task].values()
                             )
                         ),
                     }
-                    for task in rcpsp.mode_details.keys()
+                    for task in remaining_rcpsp.mode_details.keys()
                     if task != "source" and task not in running_tasks
                 },
                 rcpsp_permutation=[],
@@ -298,24 +313,13 @@ class SchedulingExecutor:
         )
 
     def next_tasks_hindsight(self, rcpsp, running_tasks):
-        # Make the "remaining" RCPSP uncertain
-        uncertain_rcpsp = UncertainRCPSPModel(
-            base_rcpsp_model=rcpsp,
-            poisson_laws={
-                task: laws
-                for task, laws in self._poisson_laws.items()
-                if task in rcpsp.mode_details
-            },
-            uniform_law=True,
-        )
-
         starts_hint = {"source": 0}
         starts_hint.update({task: 0 for task in running_tasks})
 
         # Sample RCPSPs and choose the best next task to start on average
         scenarios = defaultdict(lambda: [])
         for _ in range(self._samples):
-            sampled_rcpsp = uncertain_rcpsp.create_rcpsp_model(
+            sampled_rcpsp = rcpsp.create_rcpsp_model(
                 MethodRobustification(MethodBaseRobustification.SAMPLE)
             )
 
@@ -404,7 +408,7 @@ class SchedulingExecutor:
                 worst_schedule = None
 
                 for _ in range(self._samples):
-                    sampled_rcpsp = uncertain_rcpsp.create_rcpsp_model(
+                    sampled_rcpsp = rcpsp.create_rcpsp_model(
                         MethodRobustification(MethodBaseRobustification.SAMPLE)
                     )
 
@@ -442,15 +446,30 @@ class SchedulingExecutor:
         return best_tasks, best_next_start, best_makespan, worst_expected_schedule
 
     def next_tasks_reactive(self, rcpsp, running_tasks):
+        if self._mode == ExecutionMode.REACTIVE_AVERAGE:
+            reactive_rcpsp = rcpsp.create_rcpsp_model(
+                MethodRobustification(MethodBaseRobustification.AVERAGE)
+            )
+        elif self._mode == ExecutionMode.REACTIVE_WORST:
+            reactive_rcpsp = rcpsp.create_rcpsp_model(
+                MethodRobustification(MethodBaseRobustification.WORST_CASE)
+            )
+        elif self._mode == ExecutionMode.REACTIVE_BEST:
+            reactive_rcpsp = rcpsp.create_rcpsp_model(
+                MethodRobustification(MethodBaseRobustification.BEST_CASE)
+            )
+
         starts_hint = {"source": 0}
         starts_hint.update({task: 0 for task in running_tasks})
         status, makespan, feasible_solution = self.compute_schedule(
-            rcpsp, starts_hint=starts_hint
+            reactive_rcpsp, starts_hint=starts_hint
         )
+
         if status == cp_model.INFEASIBLE:
             raise RuntimeError("Infeasible remaining RCPSP.")
         elif status == cp_model.MODEL_INVALID:
             raise RuntimeError("Invalid CPSAT model.")
+
         # Extract the next tasks to start
         tasks_to_start = set()
         date_to_start = float("inf")
@@ -874,7 +893,7 @@ if __name__ == "__main__":
         model=model,
         device=device,
         scheduler=Scheduler.SGS,
-        mode=ExecutionMode.HINDSIGHT_DBP,
+        mode=ExecutionMode.REACTIVE_BEST,
         samples=10,
     )
 
