@@ -38,7 +38,8 @@ class Scheduler(Enum):
 
 class ExecutionMode(Enum):
     REACTIVE = 1
-    HINDSIGHT = 2
+    HINDSIGHT_LEX = 2  # Select first most appearing top tasks, then break tie by lowest average makespan
+    HINDSIGHT_DBP = 3  # Extract first potential best tasks, then reevaluate each of them on each scenario and select top tasks by lowest average makespan
 
 
 class SchedulingExecutor:
@@ -245,7 +246,10 @@ class SchedulingExecutor:
         best_next_start = None
         best_makespan = None
         worst_expected_schedule = None
-        if self._mode == ExecutionMode.HINDSIGHT:
+        if (
+            self._mode == ExecutionMode.HINDSIGHT_LEX
+            or self._mode == ExecutionMode.HINDSIGHT_DBP
+        ):
             (
                 best_tasks,
                 best_next_start,
@@ -334,49 +338,101 @@ class SchedulingExecutor:
                 (feasible_solution, makespan, date_to_start)
             )
 
-        for ts, lmk in scenarios.items():
-            highest_makespan = 0
-            worst_solution = None
-            date_to_start = None
-            for mk in lmk:
-                solution = mk[0]
-                mkspan = mk[1]
-                if mkspan >= highest_makespan:
-                    worst_solution = solution
-                    date_to_start = mk[2]
-                    highest_makespan = mk[1]
-            scenarios[ts] = (
-                worst_solution,
-                np.mean([mk[1] for mk in lmk]),
-                date_to_start,
-            )
-
         if len(scenarios) == 0:
             raise RuntimeError("No feasible scenario")
 
-        # Select the best tasks to start in term of highest choice frequency then average makespan
-        tasks_frequency = defaultdict(lambda: 0)
-        for tasks in scenarios:
-            tasks_frequency[tasks] = tasks_frequency[tasks] + 1
-        highest_frequency = 0
-        best_tasks_list = []
-        for tasks, frequency in tasks_frequency.items():
-            if frequency == highest_frequency:
-                best_tasks_list.append(tasks)
-            elif frequency > highest_frequency:
-                best_tasks_list = [tasks]
-                highest_frequency = frequency
-        best_tasks = None
-        best_next_start = None
-        best_makespan = float("inf")
-        worst_expected_schedule = None
-        for tasks in best_tasks_list:
-            solution_makespan_date = scenarios[tasks]
-            if solution_makespan_date[1] < best_makespan:
-                worst_expected_schedule = solution_makespan_date[0]
-                best_makespan = solution_makespan_date[1]
-                best_next_start = solution_makespan_date[2]
-                best_tasks = tasks
+        if self._mode == ExecutionMode.HINDSIGHT_LEX:
+
+            for ts, lmk in scenarios.items():
+                highest_makespan = 0
+                worst_solution = None
+                date_to_start = None
+                for mk in lmk:
+                    solution = mk[0]
+                    mkspan = mk[1]
+                    if mkspan >= highest_makespan:
+                        worst_solution = solution
+                        date_to_start = mk[2]
+                        highest_makespan = mk[1]
+                scenarios[ts] = (
+                    worst_solution,
+                    np.mean([mk[1] for mk in lmk]),
+                    date_to_start,
+                )
+
+            # Select the best tasks to start in term of highest choice frequency then average makespan
+            tasks_frequency = defaultdict(lambda: 0)
+            for tasks in scenarios:
+                tasks_frequency[tasks] = tasks_frequency[tasks] + 1
+            highest_frequency = 0
+            best_tasks_list = []
+            for tasks, frequency in tasks_frequency.items():
+                if frequency == highest_frequency:
+                    best_tasks_list.append(tasks)
+                elif frequency > highest_frequency:
+                    best_tasks_list = [tasks]
+                    highest_frequency = frequency
+            best_tasks = None
+            best_next_start = None
+            best_makespan = float("inf")
+            worst_expected_schedule = None
+            for tasks in best_tasks_list:
+                solution_makespan_date = scenarios[tasks]
+                if solution_makespan_date[1] < best_makespan:
+                    worst_expected_schedule = solution_makespan_date[0]
+                    best_makespan = solution_makespan_date[1]
+                    best_next_start = solution_makespan_date[2]
+                    best_tasks = tasks
+
+        elif self._mode == ExecutionMode.HINDSIGHT_DBP:
+
+            best_tasks = None
+            best_next_start = None
+            best_makespan = float("inf")
+            worst_expected_schedule = None
+
+            for ts, lmk in scenarios.items():
+                avg_date_to_start_pre = int(np.mean([mk[2] for mk in lmk]))
+                avg_makespan = 0
+                valid_samples = 0
+                highest_makespan = 0
+                worst_schedule = None
+
+                for _ in range(self._samples):
+                    sampled_rcpsp = uncertain_rcpsp.create_rcpsp_model(
+                        MethodRobustification(MethodBaseRobustification.SAMPLE)
+                    )
+
+                    scn_starts_hint = deepcopy(starts_hint)
+                    scn_starts_hint.update({t: avg_date_to_start_pre for t in ts})
+
+                    status, makespan, feasible_solution = self.compute_schedule(
+                        sampled_rcpsp, starts_hint=scn_starts_hint
+                    )
+
+                    if status == cp_model.INFEASIBLE:
+                        continue
+                    elif status == cp_model.MODEL_INVALID:
+                        raise RuntimeError("Invalid CPSAT model.")
+
+                    valid_samples += 1
+                    avg_makespan += makespan
+
+                    if makespan >= highest_makespan:
+                        highest_makespan = makespan
+                        worst_schedule = feasible_solution
+
+                avg_date_to_start_post = int(
+                    np.mean([feasible_solution[t] for t in ts])
+                )
+
+                if valid_samples > 0:
+                    avg_makespan /= valid_samples
+                    if avg_makespan < best_makespan:
+                        best_makespan = avg_makespan
+                        best_tasks = ts
+                        best_next_start = avg_date_to_start_post
+                        worst_expected_schedule = worst_schedule
 
         return best_tasks, best_next_start, best_makespan, worst_expected_schedule
 
@@ -560,11 +616,17 @@ class SchedulingExecutor:
             if t in do_model.index_task_non_dummy
         ]
         if do_model.n_jobs == 2:
-            sol = RCPSPSolution(problem=do_model,
-                                rcpsp_schedule={t: {"start_time": 0,
-                                                    "end_time": 0+do_model.mode_details[t][1]["duration"]}
-                                                for t in do_model.tasks_list},
-                                rcpsp_modes=[1 for i in range(len(perm))])
+            sol = RCPSPSolution(
+                problem=do_model,
+                rcpsp_schedule={
+                    t: {
+                        "start_time": 0,
+                        "end_time": 0 + do_model.mode_details[t][1]["duration"],
+                    }
+                    for t in do_model.tasks_list
+                },
+                rcpsp_modes=[1 for i in range(len(perm))],
+            )
         else:
             sol = RCPSPSolution(
                 problem=do_model,
@@ -795,7 +857,7 @@ if __name__ == "__main__":
         model=model,
         device=device,
         scheduler=Scheduler.SGS,
-        mode=ExecutionMode.HINDSIGHT,
+        mode=ExecutionMode.HINDSIGHT_DBP,
         samples=10,
     )
 
