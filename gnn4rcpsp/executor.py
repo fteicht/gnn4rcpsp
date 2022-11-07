@@ -3,7 +3,7 @@ from collections import defaultdict, namedtuple
 from copy import deepcopy
 from enum import Enum
 from time import perf_counter
-from typing import Dict, List, Set, Tuple, Union, Optional
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -78,7 +78,9 @@ class SchedulingExecutor:
         self._current_time = None
         self._samples = samples
 
-    def reset(self, sim_rcpsp: Optional[RCPSPModel] = None) -> Tuple[int, RCPSPSolution]:
+    def reset(
+        self, sim_rcpsp: Optional[RCPSPModel] = None
+    ) -> Tuple[int, RCPSPSolution]:
         """Samples a new RCPSP (uncertain task durations and resource capacities)
         and returns an empty schedule and current time set to 0"""
         if sim_rcpsp is None:
@@ -494,7 +496,17 @@ class SchedulingExecutor:
                 rcpsp, t2t, dur, r2t, rc, xorig, starts_hint
             )
 
-    def compute_schedule_cpsat(self, rcpsp, t2t, dur, r2t, rc, xorig, starts_hint, minimize_makespan: bool=True):
+    def compute_schedule_cpsat(
+        self,
+        rcpsp,
+        t2t,
+        dur,
+        r2t,
+        rc,
+        xorig,
+        starts_hint,
+        minimize_makespan: bool = True,
+    ):
         horizon_start = int(max(xorig + dur))
         current_horizon = horizon_start
         curt = perf_counter()
@@ -607,7 +619,7 @@ class SchedulingExecutor:
                     {t: solution[i] for i, t in enumerate(rcpsp.successors)},
                 )
             else:
-                current_horizon = max(int(1.05 * current_horizon), current_horizon+1)
+                current_horizon = max(int(1.05 * current_horizon), current_horizon + 1)
 
         return (status, float("inf"), {})
 
