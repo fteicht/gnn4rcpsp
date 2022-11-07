@@ -31,7 +31,9 @@ def build_rcpsp_model(t2t, dur, r2t, rc):
     nb_tasks = len(dur)
     tasks_list = list(range(nb_tasks))
     successors = {i: [] for i in tasks_list}
-    mode_details = {tasks_list[i]: {1: {"duration": dur[i]}} for i in range(nb_tasks)}
+    mode_details = {
+        tasks_list[i]: {1: {"duration": int(dur[i])}} for i in range(nb_tasks)
+    }
     nb_ressources = r2t.shape[0]
     resources_list = [f"R{i}" for i in range(nb_ressources)]
     resources = {resources_list[i]: int(rc[i]) for i in range(nb_ressources)}
@@ -55,7 +57,6 @@ def build_rcpsp_model(t2t, dur, r2t, rc):
         sink_task=nb_tasks - 1,
     )
     dummy_solution = model.get_dummy_solution()
-    print("makespan dummy ", dummy_solution.get_end_time(model.sink_task))
     return model, dummy_solution
 
 
@@ -662,7 +663,10 @@ def script_ftk():
     # Net = ResGINE
     model = Net().to(device)
     model.load_state_dict(
-        torch.load("../torch_data/model_ResTransformer_256_50000.tch", map_location=torch.device(device))
+        torch.load(
+            "../torch_data/model_ResTransformer_256_50000.tch",
+            map_location=torch.device(device),
+        )
     )
     run_id = timestamp = datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S")
     print(f"Run ID: {run_id}")
