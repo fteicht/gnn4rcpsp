@@ -3,7 +3,7 @@ from collections import defaultdict, namedtuple
 from copy import deepcopy
 from enum import Enum
 from time import perf_counter
-from typing import Dict, List, Set, Tuple, Union
+from typing import Dict, List, Set, Tuple, Union, Optional
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -78,12 +78,15 @@ class SchedulingExecutor:
         self._current_time = None
         self._samples = samples
 
-    def reset(self) -> Tuple[int, RCPSPSolution]:
+    def reset(self, sim_rcpsp: Optional[RCPSPModel] = None) -> Tuple[int, RCPSPSolution]:
         """Samples a new RCPSP (uncertain task durations and resource capacities)
         and returns an empty schedule and current time set to 0"""
-        self._simulated_rcpsp = self._uncertain_rcpsp.create_rcpsp_model(
-            MethodRobustification(MethodBaseRobustification.SAMPLE)
-        )
+        if sim_rcpsp is None:
+            self._simulated_rcpsp = self._uncertain_rcpsp.create_rcpsp_model(
+                MethodRobustification(MethodBaseRobustification.SAMPLE)
+            )
+        else:
+            self._simulated_rcpsp = sim_rcpsp
         self._executed_schedule = RCPSPSolution(
             problem=deepcopy(self._rcpsp),
             rcpsp_permutation=[],
@@ -491,7 +494,7 @@ class SchedulingExecutor:
                 rcpsp, t2t, dur, r2t, rc, xorig, starts_hint
             )
 
-    def compute_schedule_cpsat(self, rcpsp, t2t, dur, r2t, rc, xorig, starts_hint):
+    def compute_schedule_cpsat(self, rcpsp, t2t, dur, r2t, rc, xorig, starts_hint, minimize_makespan: bool=True):
         horizon_start = int(max(xorig + dur))
         current_horizon = horizon_start
         curt = perf_counter()
@@ -554,6 +557,8 @@ class SchedulingExecutor:
                     model.AddHint(starts[i], x)
             # model._CpModel__model.solution_hint.vars.extend(list(range(len(dur))))
             # model._CpModel__model.solution_hint.values.extend(xorig.tolist())
+            if minimize_makespan:
+                model.Minimize(makespan)
             status = solver.Solve(model)
 
             if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
@@ -602,7 +607,7 @@ class SchedulingExecutor:
                     {t: solution[i] for i, t in enumerate(rcpsp.successors)},
                 )
             else:
-                current_horizon = int(1.05 * current_horizon)
+                current_horizon = max(int(1.05 * current_horizon), current_horizon+1)
 
         return (status, float("inf"), {})
 
