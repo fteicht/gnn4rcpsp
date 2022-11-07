@@ -1,25 +1,10 @@
-from copy import deepcopy
-import os
-from typing import Dict, List, Set, Tuple, Union
+from datetime import datetime
+import json
 import torch
-import numpy as np
+from torch_geometric.data import DataLoader
 from time import perf_counter
-from collections import defaultdict, namedtuple
-from ortools.sat.python import cp_model
+from executor import ExecutionMode, Scheduler
 from models import ResTransformer
-from skdecide.discrete_optimization.rcpsp.parser.rcpsp_parser import parse_file
-from skdecide.discrete_optimization.rcpsp.rcpsp_model import (
-    UncertainRCPSPModel,
-    RCPSPModel,
-    RCPSPSolution,
-    MethodBaseRobustification,
-    MethodRobustification,
-    create_poisson_laws,
-)
-from skdecide.discrete_optimization.rcpsp.rcpsp_utils import (
-    compute_nice_resource_consumption,
-)
-from graph import Graph
 
 from executor import SchedulingExecutor
 from infer_schedules import build_rcpsp_model
@@ -27,8 +12,9 @@ from infer_schedules import build_rcpsp_model
 NUM_SAMPLES = 100
 
 
-def execute_stochastic_schedule(data):
+def execute_schedule(bench_id, data):
     data_batch = data
+    batch_results = {}
 
     # Iterate over batch elements for simplicity
     # TODO: vectorize?
@@ -36,7 +22,7 @@ def execute_stochastic_schedule(data):
     cnt = 0
     for data in data_list:
         cnt += 1
-        print("Instance {}".format(cnt))
+        print(f"Instance {cnt}")
 
         t2t, dur, r2t, rc, con, ref_makespan = (
             data.t2t.view(len(data.dur), -1).data.cpu().detach().numpy(),
@@ -46,8 +32,81 @@ def execute_stochastic_schedule(data):
             data.con.view(*data.con_shape).data.cpu().detach().numpy(),
             data.reference_makespan,
         )
-        rcpsp_model = build_rcpsp_model(t2t, dur, r2t, rc, ref_makespan)
-        executor = SchedulingExecutor(rcpsp_model, model, device, NUM_SAMPLES)
+        rcpsp_model = build_rcpsp_model(t2t, dur, r2t, rc)[0]
+        hindsight_makespans = {}
+        reactive_makespans = {}
+
+        for scn in range(NUM_SAMPLES):
+            # HINDSIGHT
+            hindsight_executor = SchedulingExecutor(
+                rcpsp_model,
+                model,
+                device,
+                Scheduler.SGS,
+                ExecutionMode.HINDSIGHT_DBP,
+                NUM_SAMPLES,
+            )
+            stop = False
+            executed_schedule, current_time = hindsight_executor.reset()
+            hindsight_makespans[f"Scenario {scn}"] = {"expectations": []}
+            timer = perf_counter()
+
+            while not stop:
+                (
+                    next_tasks,
+                    next_start,
+                    expected_makespan,
+                    expected_schedule,
+                ) = hindsight_executor.next_tasks(executed_schedule, current_time)
+
+                current_time, executed_schedule, stop = hindsight_executor.progress(
+                    next_tasks, next_start, expected_schedule
+                )
+
+                hindsight_makespans[f"Scenario {scn}"]["expectations"].append(
+                    expected_makespan
+                )
+
+            hindsight_makespans[f"Scenario {scn}"]["executed"] = current_time
+            hindsight_makespans[f"Scenario {scn}"]["timing"] = perf_counter() - timer
+
+            # REACTIVE
+            reactive_executor = SchedulingExecutor(
+                rcpsp_model,
+                model,
+                device,
+                Scheduler.SGS,
+                ExecutionMode.REACTIVE,
+                NUM_SAMPLES,
+            )
+            stop = False
+            executed_schedule, current_time = reactive_executor.reset()
+            reactive_makespans[f"Scenario {scn}"] = {"expectations": []}
+            timer = perf_counter()
+
+            while not stop:
+                (
+                    next_tasks,
+                    next_start,
+                    expected_makespan,
+                    expected_schedule,
+                ) = reactive_executor.next_tasks(executed_schedule, current_time)
+
+                current_time, executed_schedule, stop = reactive_executor.progress(
+                    next_tasks, next_start, expected_schedule
+                )
+
+                reactive_makespans[f"Scenario {scn}"]["expectations"].append(
+                    expected_makespan
+                )
+
+            reactive_makespans[f"Scenario {scn}"]["executed"] = current_time
+            reactive_makespans[f"Scenario {scn}"]["timing"] = perf_counter() - timer
+
+        batch_results[f"Benchmark {bench_id}"] = {
+            "hindsight": hindsight_makespans,
+            "reactive": reactive_makespans,
+        }
 
 
 def test(test_loader, test_list, model, device, writer):
@@ -56,7 +115,6 @@ def test(test_loader, test_list, model, device, writer):
 
     # for batch_idx, data in enumerate(tqdm(test_loader)):
     for batch_idx, data in enumerate(test_loader):
-        cur_time = perf_counter()
         data.to(device)
         out = model(data)
         data.out = out
@@ -64,8 +122,12 @@ def test(test_loader, test_list, model, device, writer):
         data._slice_dict["out"] = data._slice_dict["x"]
         data._inc_dict["out"] = data._inc_dict["x"]
 
-        execute_stochastic_schedule(data)
-        execute_reactive_schedule(data)
+        result_dict.update(
+            execute_schedule(
+                test_list[batch_idx],  # batch_size==1 thus batch_idx==test_instance_id
+                data,
+            ),
+        )
 
 
 if __name__ == "__main__":
@@ -80,9 +142,12 @@ if __name__ == "__main__":
     # Net = ResGINE
     model = Net().to(device)
     model.load_state_dict(
-        torch.load("../torch_folder/model_ResTransformer_256_50000.tch")
+        torch.load(
+            "../torch_data/model_ResTransformer_256_50000.tch",
+            map_location=torch.device(device),
+        )
     )
-    run_id = timestamp = datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    run_id = timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
     print(f"Run ID: {run_id}")
     # writer = SummaryWriter(f's3://iooda-gnn4rcpsp-bucket/tensorboard_logs/{run_id}')
     # writer = SummaryWriter(f'../tensorboard_logs/{run_id}')
@@ -94,5 +159,5 @@ if __name__ == "__main__":
         device=device,
         writer=writer,
     )
-    with open(f"../cp_solutions/inference_vs_cpsat_{run_id}.json", "w") as jsonfile:
+    with open(f"../hindsight_vs_reactive_{run_id}.json", "w") as jsonfile:
         json.dump(result, jsonfile, indent=2)
