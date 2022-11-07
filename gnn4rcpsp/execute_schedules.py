@@ -1,15 +1,35 @@
+from collections import defaultdict
 from datetime import datetime
 import json
 import torch
 from torch_geometric.data import DataLoader
 from time import perf_counter
+
+from tqdm import tqdm
 from executor import ExecutionMode, Scheduler
 from models import ResTransformer
+
+from discrete_optimization.rcpsp.rcpsp_model import (
+    MethodBaseRobustification,
+    MethodRobustification,
+    RCPSPModel,
+    RCPSPSolution,
+    UncertainRCPSPModel,
+    create_poisson_laws,
+)
 
 from executor import SchedulingExecutor
 from infer_schedules import build_rcpsp_model
 
 NUM_SAMPLES = 100
+
+ExecutionModeNames = {
+    ExecutionMode.REACTIVE_AVERAGE: "REACTIVE_AVG",
+    ExecutionMode.REACTIVE_WORST: "REACTIVE_WORST",
+    ExecutionMode.REACTIVE_BEST: "REACTIVE_BEST",
+    ExecutionMode.HINDSIGHT_LEX: "HINDSIGHT_LEX",
+    ExecutionMode.HINDSIGHT_DBP: "HINDSIGHT_DBP",
+}
 
 
 def execute_schedule(bench_id, data):
@@ -22,7 +42,7 @@ def execute_schedule(bench_id, data):
     cnt = 0
     for data in data_list:
         cnt += 1
-        print(f"Instance {cnt}")
+        # print(f"Instance {cnt}")
 
         t2t, dur, r2t, rc, con, ref_makespan = (
             data.t2t.view(len(data.dur), -1).data.cpu().detach().numpy(),
@@ -33,88 +53,87 @@ def execute_schedule(bench_id, data):
             data.reference_makespan,
         )
         rcpsp_model = build_rcpsp_model(t2t, dur, r2t, rc)[0]
-        hindsight_makespans = {}
-        reactive_makespans = {}
 
-        for scn in range(NUM_SAMPLES):
-            # HINDSIGHT
-            hindsight_executor = SchedulingExecutor(
-                rcpsp_model,
-                model,
-                device,
-                Scheduler.SGS,
-                ExecutionMode.HINDSIGHT_DBP,
-                NUM_SAMPLES,
+        poisson_laws = create_poisson_laws(
+            base_rcpsp_model=rcpsp_model,
+            range_around_mean_resource=1,
+            range_around_mean_duration=3,
+            do_uncertain_resource=False,
+            do_uncertain_duration=True,
+        )
+        uncertain_rcpsp = UncertainRCPSPModel(
+            base_rcpsp_model=rcpsp_model,
+            poisson_laws={
+                task: laws
+                for task, laws in poisson_laws.items()
+                if task in rcpsp_model.mode_details
+            },
+            uniform_law=True,
+        )
+
+        makespans = defaultdict(lambda: {})
+
+        for scn in tqdm(range(NUM_SAMPLES), desc="Scenario Loop", leave=False):
+            sample_rcpsp = uncertain_rcpsp.create_rcpsp_model(
+                MethodRobustification(MethodBaseRobustification.SAMPLE)
             )
-            stop = False
-            executed_schedule, current_time = hindsight_executor.reset()
-            hindsight_makespans[f"Scenario {scn}"] = {"expectations": []}
-            timer = perf_counter()
 
-            while not stop:
-                (
-                    next_tasks,
-                    next_start,
-                    expected_makespan,
-                    expected_schedule,
-                ) = hindsight_executor.next_tasks(executed_schedule, current_time)
+            for execution_mode in tqdm(
+                [
+                    ExecutionMode.REACTIVE_AVERAGE,
+                    ExecutionMode.REACTIVE_WORST,
+                    ExecutionMode.REACTIVE_BEST,
+                    ExecutionMode.HINDSIGHT_LEX,
+                    ExecutionMode.HINDSIGHT_DBP,
+                ],
+                desc="Mode Loop",
+                leave=False,
+            ):
+                executor = SchedulingExecutor(
+                    rcpsp_model,
+                    model,
+                    device,
+                    Scheduler.SGS,
+                    execution_mode,
+                    NUM_SAMPLES,
+                )
+                stop = False
+                executed_schedule, current_time = executor.reset(sim_rcpsp=sample_rcpsp)
+                makespans[f"Scenario {scn}"][execution_mode] = {"expectations": []}
+                timer = perf_counter()
 
-                current_time, executed_schedule, stop = hindsight_executor.progress(
-                    next_tasks, next_start, expected_schedule
+                while not stop:
+                    (
+                        next_tasks,
+                        next_start,
+                        expected_makespan,
+                        expected_schedule,
+                    ) = executor.next_tasks(executed_schedule, current_time)
+
+                    current_time, executed_schedule, stop = executor.progress(
+                        next_tasks, next_start, expected_schedule
+                    )
+
+                    makespans[f"Scenario {scn}"][execution_mode]["expectations"].append(
+                        expected_makespan
+                    )
+
+                makespans[f"Scenario {scn}"][execution_mode]["executed"] = current_time
+                makespans[f"Scenario {scn}"][execution_mode]["timing"] = (
+                    perf_counter() - timer
                 )
 
-                hindsight_makespans[f"Scenario {scn}"]["expectations"].append(
-                    expected_makespan
-                )
-
-            hindsight_makespans[f"Scenario {scn}"]["executed"] = current_time
-            hindsight_makespans[f"Scenario {scn}"]["timing"] = perf_counter() - timer
-
-            # REACTIVE
-            reactive_executor = SchedulingExecutor(
-                rcpsp_model,
-                model,
-                device,
-                Scheduler.SGS,
-                ExecutionMode.REACTIVE,
-                NUM_SAMPLES,
-            )
-            stop = False
-            executed_schedule, current_time = reactive_executor.reset()
-            reactive_makespans[f"Scenario {scn}"] = {"expectations": []}
-            timer = perf_counter()
-
-            while not stop:
-                (
-                    next_tasks,
-                    next_start,
-                    expected_makespan,
-                    expected_schedule,
-                ) = reactive_executor.next_tasks(executed_schedule, current_time)
-
-                current_time, executed_schedule, stop = reactive_executor.progress(
-                    next_tasks, next_start, expected_schedule
-                )
-
-                reactive_makespans[f"Scenario {scn}"]["expectations"].append(
-                    expected_makespan
-                )
-
-            reactive_makespans[f"Scenario {scn}"]["executed"] = current_time
-            reactive_makespans[f"Scenario {scn}"]["timing"] = perf_counter() - timer
-
-        batch_results[f"Benchmark {bench_id}"] = {
-            "hindsight": hindsight_makespans,
-            "reactive": reactive_makespans,
-        }
+        batch_results[f"Benchmark {bench_id}"] = makespans
 
 
-def test(test_loader, test_list, model, device, writer):
+def test(test_loader, test_list, model, device):
     result_dict = {}
     model.eval()
 
     # for batch_idx, data in enumerate(tqdm(test_loader)):
-    for batch_idx, data in enumerate(test_loader):
+    for batch_idx, data in enumerate(
+        tqdm(test_loader, desc="Benchmark Loop", leave=True)
+    ):
         data.to(device)
         out = model(data)
         data.out = out
@@ -149,15 +168,11 @@ if __name__ == "__main__":
     )
     run_id = timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
     print(f"Run ID: {run_id}")
-    # writer = SummaryWriter(f's3://iooda-gnn4rcpsp-bucket/tensorboard_logs/{run_id}')
-    # writer = SummaryWriter(f'../tensorboard_logs/{run_id}')
-    writer = None
     result = test(
         test_loader=test_loader,
         test_list=test_list,
         model=model,
         device=device,
-        writer=writer,
     )
     with open(f"../hindsight_vs_reactive_{run_id}.json", "w") as jsonfile:
         json.dump(result, jsonfile, indent=2)
