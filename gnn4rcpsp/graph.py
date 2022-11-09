@@ -7,8 +7,8 @@ import os
 import torch
 from torch_geometric.utils import to_networkx
 from torch_geometric.data import Data
-from skdecide.discrete_optimization.rcpsp.parser.rcpsp_parser import parse_file
-from skdecide.discrete_optimization.rcpsp.rcpsp_model import RCPSPModel, RCPSPSolution
+from discrete_optimization.rcpsp.rcpsp_parser import parse_file
+from discrete_optimization.rcpsp.rcpsp_model import RCPSPModel, RCPSPSolution
 from tqdm import tqdm
 
 
