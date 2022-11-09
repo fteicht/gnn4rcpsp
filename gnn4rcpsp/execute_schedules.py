@@ -15,11 +15,13 @@ from discrete_optimization.rcpsp.rcpsp_model import (
     create_poisson_laws,
 )
 
-from executor import ExecutionMode, Scheduler, SchedulingExecutor
+from executor import ExecutionMode, Scheduler, SchedulingExecutor, CPSatSpecificParams
 from infer_schedules import build_rcpsp_model
 
 from models import ResTransformer
 from tqdm import tqdm
+
+SchedulerNames = {Scheduler.SGS: "SGS", Scheduler.CPSAT: "CPSAT"}
 
 ExecutionModeNames = {
     ExecutionMode.REACTIVE_AVERAGE: "REACTIVE_AVG",
@@ -81,57 +83,67 @@ def execute_schedule(device, model, bench_id, result_file, data, json_lock):
                 MethodRobustification(MethodBaseRobustification.SAMPLE)
             )
 
-            for execution_mode in tqdm(
+            for scheduler, execution_mode in tqdm(
                 [
-                    ExecutionMode.REACTIVE_AVERAGE,
-                    ExecutionMode.REACTIVE_WORST,
-                    ExecutionMode.REACTIVE_BEST,
-                    ExecutionMode.HINDSIGHT_LEX,
-                    ExecutionMode.HINDSIGHT_DBP,
+                    (Scheduler.SGS, ExecutionMode.REACTIVE_AVERAGE),
+                    (Scheduler.SGS, ExecutionMode.REACTIVE_WORST),
+                    (Scheduler.SGS, ExecutionMode.REACTIVE_BEST),
+                    # (Scheduler.CPSAT, ExecutionMode.REACTIVE_AVERAGE),
+                    (Scheduler.SGS, ExecutionMode.HINDSIGHT_LEX),
+                    (Scheduler.SGS, ExecutionMode.HINDSIGHT_DBP),
                 ],
                 desc="Mode Loop",
                 leave=False,
             ):
-                executor = SchedulingExecutor(
-                    rcpsp_model,
-                    model,
-                    device,
-                    Scheduler.SGS,
-                    execution_mode,
-                    NUM_SAMPLES,
-                )
-                stop = False
-                executed_schedule, current_time = executor.reset(sim_rcpsp=sample_rcpsp)
-                makespans[f"Scenario {scn}"][ExecutionModeNames[execution_mode]] = {
-                    "expectations": []
-                }
-                timer = perf_counter()
-
-                while not stop:
-                    (
-                        next_tasks,
-                        next_start,
-                        expected_makespan,
-                        expected_schedule,
-                    ) = executor.next_tasks(executed_schedule, current_time)
-
-                    current_time, executed_schedule, stop = executor.progress(
-                        next_tasks, next_start, expected_schedule
+                try:
+                    executor = SchedulingExecutor(
+                        rcpsp_model,
+                        model,
+                        device,
+                        scheduler,
+                        execution_mode,
+                        NUM_SAMPLES,
+                        CPSatSpecificParams(
+                            do_minimization=True,
+                            warm_start_with_gnn=False,
+                            time_limit_seconds=5,
+                        )
+                        if scheduler == Scheduler.CPSAT
+                        else None,
                     )
+                    setup_name = f"{SchedulerNames[scheduler]}-{ExecutionModeNames[execution_mode]}"
+                    stop = False
+                    executed_schedule, current_time = executor.reset(
+                        sim_rcpsp=sample_rcpsp
+                    )
+                    makespans[f"Scenario {scn}"][setup_name] = {"expectations": []}
+                    timer = perf_counter()
 
-                    makespans[f"Scenario {scn}"][ExecutionModeNames[execution_mode]][
-                        "expectations"
-                    ].append(expected_makespan)
+                    while not stop:
+                        (
+                            next_tasks,
+                            next_start,
+                            expected_makespan,
+                            expected_schedule,
+                        ) = executor.next_tasks(executed_schedule, current_time)
 
-                makespans[f"Scenario {scn}"][ExecutionModeNames[execution_mode]][
-                    "executed"
-                ] = current_time
-                makespans[f"Scenario {scn}"][ExecutionModeNames[execution_mode]][
-                    "timing"
-                ] = (perf_counter() - timer)
-                makespans[f"Scenario {scn}"][ExecutionModeNames[execution_mode]][
-                    "schedule"
-                ] = executed_schedule.rcpsp_schedule
+                        current_time, executed_schedule, stop = executor.progress(
+                            next_tasks, next_start, expected_schedule
+                        )
+
+                        makespans[f"Scenario {scn}"][setup_name]["expectations"].append(
+                            expected_makespan
+                        )
+
+                    makespans[f"Scenario {scn}"][setup_name]["executed"] = current_time
+                    makespans[f"Scenario {scn}"][setup_name]["timing"] = (
+                        perf_counter() - timer
+                    )
+                    makespans[f"Scenario {scn}"][setup_name][
+                        "schedule"
+                    ] = executed_schedule.rcpsp_schedule
+                except:
+                    continue
 
         json_lock.acquire()
         with open(result_file, "r+") as jsonfile:
