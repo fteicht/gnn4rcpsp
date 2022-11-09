@@ -1,6 +1,7 @@
 from collections import defaultdict
 from datetime import datetime
 import json
+import os
 import torch
 from torch_geometric.data import DataLoader
 from time import perf_counter
@@ -21,7 +22,7 @@ from discrete_optimization.rcpsp.rcpsp_model import (
 from executor import SchedulingExecutor
 from infer_schedules import build_rcpsp_model
 
-NUM_SAMPLES = 100
+NUM_SAMPLES = 30
 
 ExecutionModeNames = {
     ExecutionMode.REACTIVE_AVERAGE: "REACTIVE_AVG",
@@ -32,9 +33,8 @@ ExecutionModeNames = {
 }
 
 
-def execute_schedule(bench_id, data):
+def execute_schedule(bench_id, data, result_file):
     data_batch = data
-    batch_results = {}
 
     # Iterate over batch elements for simplicity
     # TODO: vectorize?
@@ -126,14 +126,27 @@ def execute_schedule(bench_id, data):
                 ] = (perf_counter() - timer)
                 makespans[f"Scenario {scn}"][ExecutionModeNames[execution_mode]][
                     "schedule"
-                ] = executed_schedule
+                ] = executed_schedule.rcpsp_schedule
 
-        batch_results[f"Benchmark {bench_id}"] = makespans
+        with open(result_file, "r+") as jsonfile:
+            jsonfile.seek(0, os.SEEK_END)
+            jsonfile.seek(jsonfile.tell() - 4, os.SEEK_SET)
+            char = jsonfile.read(1)
+            jsonfile.seek(0, os.SEEK_END)
+            jsonfile.seek(jsonfile.tell() - 3, os.SEEK_SET)
+            if char == "{":  # first bench
+                jsonfile.write("\n")
+            elif char == "}":
+                jsonfile.write(",\n")
+            jsonfile.write(f'"Benchmark {bench_id}": ')
+            json.dump(makespans, jsonfile, indent=2)
+            jsonfile.write("\n}\n")
 
 
-def test(test_loader, test_list, model, device):
-    result_dict = {}
+def test(test_loader, test_list, model, device, result_file):
     model.eval()
+    with open(result_file, "w") as jsonfile:
+        jsonfile.write("{\n}\n")
 
     # for batch_idx, data in enumerate(tqdm(test_loader)):
     for batch_idx, data in enumerate(
@@ -146,11 +159,10 @@ def test(test_loader, test_list, model, device):
         data._slice_dict["out"] = data._slice_dict["x"]
         data._inc_dict["out"] = data._inc_dict["x"]
 
-        result_dict.update(
-            execute_schedule(
-                test_list[batch_idx],  # batch_size==1 thus batch_idx==test_instance_id
-                data,
-            ),
+        execute_schedule(
+            test_list[batch_idx],  # batch_size==1 thus batch_idx==test_instance_id
+            data,
+            result_file,
         )
 
 
@@ -173,11 +185,11 @@ if __name__ == "__main__":
     )
     run_id = timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
     print(f"Run ID: {run_id}")
+    result_file = f"../hindsight_vs_reactive_{run_id}.json"
     result = test(
         test_loader=test_loader,
         test_list=test_list,
         model=model,
         device=device,
+        result_file=result_file,
     )
-    with open(f"../hindsight_vs_reactive_{run_id}.json", "w") as jsonfile:
-        json.dump(result, jsonfile, indent=2)
