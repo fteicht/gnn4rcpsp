@@ -1,3 +1,4 @@
+import dataclasses
 import os
 from collections import defaultdict, namedtuple
 from copy import deepcopy
@@ -44,6 +45,26 @@ class ExecutionMode(Enum):
     HINDSIGHT_DBP = 5  # Extract first potential best tasks, then reevaluate each of them on each scenario and select top tasks by lowest average makespan
 
 
+@dataclasses.dataclass
+class CPSatSpecificParams:
+    do_minimization: bool
+    warm_start_with_gnn: bool
+    time_limit_seconds: float
+
+    @staticmethod
+    def default():
+        return CPSatSpecificParams(
+            do_minimization=False, warm_start_with_gnn=True, time_limit_seconds=1
+        )
+
+    # good for experimentation
+    @staticmethod
+    def default_cp_reactive():
+        return CPSatSpecificParams(
+            do_minimization=True, warm_start_with_gnn=False, time_limit_seconds=5
+        )
+
+
 class SchedulingExecutor:
     def __init__(
         self,
@@ -53,6 +74,7 @@ class SchedulingExecutor:
         scheduler: Scheduler,
         mode: ExecutionMode,
         samples: int = 100,
+        params_cp: Optional[CPSatSpecificParams] = None,
     ) -> None:
         self._rcpsp = rcpsp
         self._model = model
@@ -79,6 +101,9 @@ class SchedulingExecutor:
         self._executed_schedule = None
         self._current_time = None
         self._samples = samples
+        self._params_cp = params_cp
+        if params_cp is None:
+            self._params_cp = CPSatSpecificParams.default_cp_reactive()
 
     def reset(
         self, sim_rcpsp: Optional[RCPSPModel] = None
@@ -167,7 +192,7 @@ class SchedulingExecutor:
         the current time, and returns the next tasks to start, their starting date, the expected makespan and the full updated schedule"""
 
         executed_rcpsp = executed_schedule.problem
-
+        tt = perf_counter()
         if len(executed_schedule.rcpsp_schedule) == 0:
             running_tasks = set()
             front_tasks = set()
@@ -258,6 +283,7 @@ class SchedulingExecutor:
             },
             uniform_law=True,
         )
+        # print("initialisation rcpsp, ", perf_counter()-tt)
         best_tasks = None
         best_next_start = None
         best_makespan = None
@@ -319,13 +345,17 @@ class SchedulingExecutor:
         # Sample RCPSPs and choose the best next task to start on average
         scenarios = defaultdict(lambda: [])
         for _ in range(self._samples):
+            t = perf_counter()
             sampled_rcpsp = rcpsp.create_rcpsp_model(
                 MethodRobustification(MethodBaseRobustification.SAMPLE)
             )
+            # print("sample rcpsp hindsight, ", perf_counter()-t)
 
+            tt = perf_counter()
             status, makespan, feasible_solution = self.compute_schedule(
                 sampled_rcpsp, starts_hint=starts_hint
             )
+            # print("all comp schdeule", perf_counter()-tt)
 
             if status == cp_model.INFEASIBLE:
                 continue
@@ -333,6 +363,7 @@ class SchedulingExecutor:
                 raise RuntimeError("Invalid CPSAT model.")
 
             # Extract the next tasks to start
+            tt = perf_counter()
             tasks_to_start = set()
             date_to_start = float("inf")
             for task, start in feasible_solution.items():
@@ -346,12 +377,13 @@ class SchedulingExecutor:
             scenarios[frozenset(tasks_to_start)].append(
                 (feasible_solution, makespan, date_to_start)
             )
+            # print("extract ", perf_counter()-tt)
 
         if len(scenarios) == 0:
             raise RuntimeError("No feasible scenario")
 
         if self._mode == ExecutionMode.HINDSIGHT_LEX:
-
+            tt = perf_counter()
             for ts, lmk in scenarios.items():
                 highest_makespan = 0
                 worst_solution = None
@@ -392,6 +424,7 @@ class SchedulingExecutor:
                     best_makespan = solution_makespan_date[1]
                     best_next_start = solution_makespan_date[2]
                     best_tasks = tasks
+            # print("postpro hindsight lex ", perf_counter()-tt)
 
         elif self._mode == ExecutionMode.HINDSIGHT_DBP:
 
@@ -485,14 +518,19 @@ class SchedulingExecutor:
     def compute_schedule(
         self, rcpsp: RCPSPModel, starts_hint: Dict[int, int] = None
     ) -> Tuple[int, int, List[int]]:
+        t = perf_counter()
         data = Graph().create_from_data(rcpsp)
+        # print(perf_counter()-t, "sec ")
         data.to(self._device)
+        t = perf_counter()
         out = self._model(data)
+        # print(perf_counter()- t, "inference")
         data.out = out
         # TODO: is there a cleaner way to do this?
         # data._slice_dict['out'] = data._slice_dict['x']
         # data._inc_dict['out'] = data._inc_dict['x']
 
+        tt = perf_counter()
         t2t, dur, r2t, rc = (
             data.t2t.view(len(data.dur), -1).data.cpu().detach().numpy(),
             data.dur.data.cpu().detach().numpy(),
@@ -502,10 +540,11 @@ class SchedulingExecutor:
         xorig = np.around(
             data.out[len(rc) :, 0].cpu().detach().numpy(), decimals=0
         ).astype(int)
+        # print("extract data", perf_counter()-tt)
 
         if self._scheduler == Scheduler.CPSAT:
             return self.compute_schedule_cpsat(
-                rcpsp, t2t, dur, r2t, rc, xorig, starts_hint
+                rcpsp, t2t, dur, r2t, rc, xorig, starts_hint, params_cp=self._params_cp
             )
         elif self._scheduler == Scheduler.SGS:
             return self.compute_schedule_sgs(
@@ -521,7 +560,7 @@ class SchedulingExecutor:
         rc,
         xorig,
         starts_hint,
-        minimize_makespan: bool = True,
+        params_cp: CPSatSpecificParams,
     ):
         horizon_start = int(max(xorig + dur))
         current_horizon = horizon_start
@@ -577,15 +616,19 @@ class SchedulingExecutor:
             solver.parameters.max_time_in_seconds = max(
                 0, CPSAT_TIME_LIMIT - int(perf_counter() - curt)
             )
+            solver.parameters.max_time_in_seconds = min(
+                solver.parameters.max_time_in_seconds, params_cp.time_limit_seconds
+            )
             xorig_list = xorig.tolist()
             shift = min(xorig_list)
             xorig_list = [x - shift for x in xorig_list]
-            for i, x in enumerate(xorig_list):
-                if starts_hint is None or i not in starts_hint:
-                    model.AddHint(starts[i], x)
+            if params_cp.warm_start_with_gnn:
+                for i, x in enumerate(xorig_list):
+                    if starts_hint is None or i not in starts_hint:
+                        model.AddHint(starts[i], x)
             # model._CpModel__model.solution_hint.vars.extend(list(range(len(dur))))
             # model._CpModel__model.solution_hint.values.extend(xorig.tolist())
-            if minimize_makespan:
+            if params_cp.do_minimization:
                 model.Minimize(makespan)
             status = solver.Solve(model)
 
@@ -667,9 +710,11 @@ class SchedulingExecutor:
                 rcpsp_modes=[1 for i in range(len(perm))],
             )
             assert do_model.n_jobs > 2
+            t = perf_counter()
             sol.generate_schedule_from_permutation_serial_sgs_2(
                 current_t=0, completed_tasks={}, scheduled_tasks_start_times=starts_hint
             )
+            # print("sgs ", perf_counter()-t)
 
         makespan = do_model.evaluate(sol)["makespan"]
         feasible_solution = {
@@ -889,9 +934,10 @@ if __name__ == "__main__":
         rcpsp=rcpsp,
         model=model,
         device=device,
-        scheduler=Scheduler.SGS,
-        mode=ExecutionMode.REACTIVE_BEST,
+        scheduler=Scheduler.CPSAT,
+        mode=ExecutionMode.REACTIVE_AVERAGE,
         samples=10,
+        params_cp=CPSatSpecificParams.default_cp_reactive(),
     )
 
     executed_schedule, current_time = executor.reset()
@@ -911,7 +957,7 @@ if __name__ == "__main__":
             expected_makespan,
             expected_schedule,
         ) = executor.next_tasks(executed_schedule, current_time)
-        print("Best tasks to start at time {}: {}".format(next_start, list(next_tasks)))
+        # print("Best tasks to start at time {}: {}".format(next_start, list(next_tasks)))
 
         current_time, executed_schedule, stop = executor.progress(
             next_tasks, next_start, expected_schedule
