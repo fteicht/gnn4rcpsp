@@ -5,24 +5,21 @@ import os
 import torch
 from torch_geometric.data import DataLoader
 from time import perf_counter
-
-from tqdm import tqdm
-from executor import ExecutionMode, Scheduler
-from models import ResTransformer
+from pathos.multiprocessing import ProcessingPool as Pool
+from multiprocessing import Manager
 
 from discrete_optimization.rcpsp.rcpsp_model import (
     MethodBaseRobustification,
     MethodRobustification,
-    RCPSPModel,
-    RCPSPSolution,
     UncertainRCPSPModel,
     create_poisson_laws,
 )
 
-from executor import SchedulingExecutor
+from executor import ExecutionMode, Scheduler, SchedulingExecutor
 from infer_schedules import build_rcpsp_model
 
-NUM_SAMPLES = 30
+from models import ResTransformer
+from tqdm import tqdm
 
 ExecutionModeNames = {
     ExecutionMode.REACTIVE_AVERAGE: "REACTIVE_AVG",
@@ -32,8 +29,16 @@ ExecutionModeNames = {
     ExecutionMode.HINDSIGHT_DBP: "HINDSIGHT_DBP",
 }
 
+NUM_SAMPLES = 30
 
-def execute_schedule(bench_id, data, result_file):
+
+def execute_schedule(device, model, bench_id, result_file, data, json_lock):
+    data.to(device)
+    out = model(data)
+    data.out = out
+    # TODO: is there a cleaner way to do this?
+    data._slice_dict["out"] = data._slice_dict["x"]
+    data._inc_dict["out"] = data._inc_dict["x"]
     data_batch = data
 
     # Iterate over batch elements for simplicity
@@ -128,6 +133,7 @@ def execute_schedule(bench_id, data, result_file):
                     "schedule"
                 ] = executed_schedule.rcpsp_schedule
 
+        json_lock.acquire()
         with open(result_file, "r+") as jsonfile:
             jsonfile.seek(0, os.SEEK_END)
             jsonfile.seek(jsonfile.tell() - 4, os.SEEK_SET)
@@ -141,28 +147,33 @@ def execute_schedule(bench_id, data, result_file):
             jsonfile.write(f'"Benchmark {bench_id}": ')
             json.dump(makespans, jsonfile, indent=2)
             jsonfile.write("\n}\n")
+        json_lock.release()
 
 
 def test(test_loader, test_list, model, device, result_file):
     model.eval()
+    m = Manager()
+    json_lock = m.Lock()
+
     with open(result_file, "w") as jsonfile:
         jsonfile.write("{\n}\n")
 
-    # for batch_idx, data in enumerate(tqdm(test_loader)):
-    for batch_idx, data in enumerate(
-        tqdm(test_loader, desc="Benchmark Loop", leave=True)
-    ):
-        data.to(device)
-        out = model(data)
-        data.out = out
-        # TODO: is there a cleaner way to do this?
-        data._slice_dict["out"] = data._slice_dict["x"]
-        data._inc_dict["out"] = data._inc_dict["x"]
-
-        execute_schedule(
-            test_list[batch_idx],  # batch_size==1 thus batch_idx==test_instance_id
-            data,
-            result_file,
+    with Pool() as pool:
+        pool.map(
+            lambda x: execute_schedule(*x),
+            [
+                (
+                    device,
+                    model,
+                    test_list[
+                        batch_idx
+                    ],  # batch_size==1 thus batch_idx==test_instance_id
+                    result_file,
+                    data,
+                    json_lock,
+                )
+                for batch_idx, data in enumerate(test_loader)
+            ],
         )
 
 
