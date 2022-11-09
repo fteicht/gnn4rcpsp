@@ -6,7 +6,8 @@ import torch
 from torch_geometric.data import DataLoader
 from time import perf_counter
 from pathos.multiprocessing import ProcessingPool as Pool
-from multiprocessing import Manager
+from multiprocess import Manager
+import multiprocess.context as ctx
 
 from discrete_optimization.rcpsp.rcpsp_model import (
     MethodBaseRobustification,
@@ -31,10 +32,12 @@ ExecutionModeNames = {
     ExecutionMode.HINDSIGHT_DBP: "HINDSIGHT_DBP",
 }
 
-NUM_SAMPLES = 30
+NUM_SAMPLES = 1
 
 
-def execute_schedule(device, model, bench_id, result_file, data, json_lock):
+def execute_schedule(
+    device, model, bench_id, tests_done, nb_tests, result_file, data, json_lock
+):
     data.to(device)
     out = model(data)
     data.out = out
@@ -46,11 +49,7 @@ def execute_schedule(device, model, bench_id, result_file, data, json_lock):
     # Iterate over batch elements for simplicity
     # TODO: vectorize?
     data_list = data_batch.to_data_list()
-    cnt = 0
     for data in data_list:
-        cnt += 1
-        # print(f"Instance {cnt}")
-
         t2t, dur, r2t, rc = (
             data.t2t.view(len(data.dur), -1).data.cpu().detach().numpy(),
             data.dur.data.cpu().detach().numpy(),
@@ -142,10 +141,13 @@ def execute_schedule(device, model, bench_id, result_file, data, json_lock):
                     makespans[f"Scenario {scn}"][setup_name][
                         "schedule"
                     ] = executed_schedule.rcpsp_schedule
-                except:
+                except Exception as e:
+                    print(e)
                     continue
 
         json_lock.acquire()
+        tests_done.value += 1
+        print(f"Done {tests_done.value} over {nb_tests}")
         with open(result_file, "r+") as jsonfile:
             jsonfile.seek(0, os.SEEK_END)
             jsonfile.seek(jsonfile.tell() - 4, os.SEEK_SET)
@@ -162,41 +164,10 @@ def execute_schedule(device, model, bench_id, result_file, data, json_lock):
         json_lock.release()
 
 
-def test(test_loader, test_list, model, device, result_file):
-    model.eval()
-    m = Manager()
-    json_lock = m.Lock()
-
-    with open(result_file, "w") as jsonfile:
-        jsonfile.write("{\n}\n")
-
-    with Pool() as pool:
-        pool.map(
-            lambda x: execute_schedule(*x),
-            [
-                (
-                    device,
-                    model,
-                    test_list[
-                        batch_idx
-                    ],  # batch_size==1 thus batch_idx==test_instance_id
-                    result_file,
-                    data,
-                    json_lock,
-                )
-                for batch_idx, data in enumerate(test_loader)
-            ],
-        )
-
-
-if __name__ == "__main__":
-    data_list = torch.load("../torch_data/data_list.tch")
-    train_list = torch.load("../torch_data/train_list.tch")
-    test_list = list(set(range(len(data_list))) - set(train_list))
-    test_loader = DataLoader(
-        [data_list[d] for d in test_list], batch_size=1, shuffle=False
-    )
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def do_test(data, bench_id, tests_done, nb_tests, result_file, json_lock):
+    test_loader = DataLoader([data], batch_size=1, shuffle=False)
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = "cpu"
     Net = ResTransformer
     # Net = ResGINE
     model = Net().to(device)
@@ -206,13 +177,50 @@ if __name__ == "__main__":
             map_location=torch.device(device),
         )
     )
+    model.eval()
+    for d in test_loader:
+        execute_schedule(
+            device, model, bench_id, tests_done, nb_tests, result_file, d, json_lock
+        )
+
+
+def test(data_list, test_list, result_file):
+    m = Manager()
+    json_lock = m.Lock()
+    tests_done = m.Value("i", 0)
+
+    with open(result_file, "w") as jsonfile:
+        jsonfile.write("{\n}\n")
+
+    with Pool() as pool:
+        pool.map(
+            lambda x: do_test(*x),
+            [
+                (
+                    data,
+                    bench_id,
+                    tests_done,
+                    len(test_list),
+                    result_file,
+                    json_lock,
+                )
+                for bench_id, data in [
+                    (bench_id, data_list[bench_id]) for bench_id in test_list
+                ]
+            ],
+        )
+
+
+if __name__ == "__main__":
+    ctx._force_start_method("spawn")
+    data_list = torch.load("../torch_data/data_list.tch")
+    train_list = torch.load("../torch_data/train_list.tch")
+    test_list = list(set(range(len(data_list))) - set(train_list))
     run_id = timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
     print(f"Run ID: {run_id}")
     result_file = f"../hindsight_vs_reactive_{run_id}.json"
     result = test(
-        test_loader=test_loader,
+        data_list=data_list,
         test_list=test_list,
-        model=model,
-        device=device,
         result_file=result_file,
     )
