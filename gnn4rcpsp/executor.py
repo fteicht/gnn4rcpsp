@@ -569,7 +569,7 @@ class SchedulingExecutor:
         while current_horizon <= 2 * horizon_start:
 
             model = cp_model.CpModel()
-            horizon = current_horizon
+            horizon = int(1.5 * rcpsp.horizon)
             starts = [
                 model.NewIntVar(0, horizon - 1, "start_task[{}]".format(i))
                 for i in range(len(dur))

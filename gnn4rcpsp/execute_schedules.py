@@ -1,15 +1,10 @@
-from collections import defaultdict
-from datetime import datetime
 import json
 import os
-import torch
-from torch_geometric.data import DataLoader
+from collections import defaultdict
+from datetime import datetime
 from time import perf_counter
 
-from tqdm import tqdm
-from executor import ExecutionMode, Scheduler
-from models import ResTransformer
-
+import torch
 from discrete_optimization.rcpsp.rcpsp_model import (
     MethodBaseRobustification,
     MethodRobustification,
@@ -18,9 +13,11 @@ from discrete_optimization.rcpsp.rcpsp_model import (
     UncertainRCPSPModel,
     create_poisson_laws,
 )
-
-from executor import SchedulingExecutor
+from executor import CPSatSpecificParams, ExecutionMode, Scheduler, SchedulingExecutor
 from infer_schedules import build_rcpsp_model
+from models import ResTransformer
+from torch_geometric.data import DataLoader
+from tqdm import tqdm
 
 NUM_SAMPLES = 30
 
@@ -31,6 +28,7 @@ ExecutionModeNames = {
     ExecutionMode.HINDSIGHT_LEX: "HINDSIGHT_LEX",
     ExecutionMode.HINDSIGHT_DBP: "HINDSIGHT_DBP",
 }
+SchedulerModeNames = {Scheduler.SGS: "SGS", Scheduler.CPSAT: "CPSAT"}
 
 
 def execute_schedule(bench_id, data, result_file):
@@ -76,13 +74,14 @@ def execute_schedule(bench_id, data, result_file):
                 MethodRobustification(MethodBaseRobustification.SAMPLE)
             )
 
-            for execution_mode in tqdm(
+            for scheduler, execution_mode in tqdm(
                 [
-                    ExecutionMode.REACTIVE_AVERAGE,
-                    ExecutionMode.REACTIVE_WORST,
-                    ExecutionMode.REACTIVE_BEST,
-                    ExecutionMode.HINDSIGHT_LEX,
-                    ExecutionMode.HINDSIGHT_DBP,
+                    (Scheduler.CPSAT, ExecutionMode.REACTIVE_AVERAGE),
+                    (Scheduler.SGS, ExecutionMode.REACTIVE_AVERAGE),
+                    (Scheduler.SGS, ExecutionMode.REACTIVE_WORST),
+                    (Scheduler.SGS, ExecutionMode.REACTIVE_BEST),
+                    (Scheduler.SGS, ExecutionMode.HINDSIGHT_LEX),
+                    (Scheduler.SGS, ExecutionMode.HINDSIGHT_DBP),
                 ],
                 desc="Mode Loop",
                 leave=False,
@@ -91,42 +90,52 @@ def execute_schedule(bench_id, data, result_file):
                     rcpsp_model,
                     model,
                     device,
-                    Scheduler.SGS,
+                    scheduler,
                     execution_mode,
                     NUM_SAMPLES,
+                    params_cp=CPSatSpecificParams.default_cp_reactive(),
                 )
                 stop = False
+                key_in_result = (
+                    ExecutionModeNames[execution_mode]
+                    + "-"
+                    + SchedulerModeNames[scheduler]
+                )
                 executed_schedule, current_time = executor.reset(sim_rcpsp=sample_rcpsp)
-                makespans[f"Scenario {scn}"][ExecutionModeNames[execution_mode]] = {
-                    "expectations": []
-                }
+                makespans[f"Scenario {scn}"][key_in_result] = {"expectations": []}
                 timer = perf_counter()
+                try:
+                    while not stop:
+                        (
+                            next_tasks,
+                            next_start,
+                            expected_makespan,
+                            expected_schedule,
+                        ) = executor.next_tasks(executed_schedule, current_time)
+                        current_time, executed_schedule, stop = executor.progress(
+                            next_tasks, next_start, expected_schedule
+                        )
 
-                while not stop:
-                    (
-                        next_tasks,
-                        next_start,
-                        expected_makespan,
-                        expected_schedule,
-                    ) = executor.next_tasks(executed_schedule, current_time)
+                        makespans[f"Scenario {scn}"][key_in_result][
+                            "expectations"
+                        ].append(expected_makespan)
 
-                    current_time, executed_schedule, stop = executor.progress(
-                        next_tasks, next_start, expected_schedule
+                    makespans[f"Scenario {scn}"][key_in_result][
+                        "executed"
+                    ] = current_time
+                    makespans[f"Scenario {scn}"][key_in_result]["timing"] = (
+                        perf_counter() - timer
                     )
-
-                    makespans[f"Scenario {scn}"][ExecutionModeNames[execution_mode]][
-                        "expectations"
-                    ].append(expected_makespan)
-
-                makespans[f"Scenario {scn}"][ExecutionModeNames[execution_mode]][
-                    "executed"
-                ] = current_time
-                makespans[f"Scenario {scn}"][ExecutionModeNames[execution_mode]][
-                    "timing"
-                ] = (perf_counter() - timer)
-                makespans[f"Scenario {scn}"][ExecutionModeNames[execution_mode]][
-                    "schedule"
-                ] = executed_schedule.rcpsp_schedule
+                    makespans[f"Scenario {scn}"][key_in_result][
+                        "schedule"
+                    ] = executed_schedule.rcpsp_schedule
+                    print("Algo, ", key_in_result, " makespan ", current_time)
+                except Exception as e:
+                    # Something bad occured...
+                    print("Computation failed", scheduler, execution_mode)
+                    makespans[f"Scenario {scn}"][key_in_result]["executed"] = "Fail"
+                    makespans[f"Scenario {scn}"][key_in_result]["timing"] = "Fail"
+                    makespans[f"Scenario {scn}"][key_in_result]["schedule"] = "Fail"
 
         with open(result_file, "r+") as jsonfile:
             jsonfile.seek(0, os.SEEK_END)
