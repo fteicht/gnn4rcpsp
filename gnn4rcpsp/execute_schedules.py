@@ -44,13 +44,11 @@ def execute_schedule(bench_id, data):
         cnt += 1
         # print(f"Instance {cnt}")
 
-        t2t, dur, r2t, rc, con, ref_makespan = (
+        t2t, dur, r2t, rc = (
             data.t2t.view(len(data.dur), -1).data.cpu().detach().numpy(),
             data.dur.data.cpu().detach().numpy(),
             data.r2t.view(len(data.rc), len(data.dur)).data.cpu().detach().numpy(),
             data.rc.data.cpu().detach().numpy(),
-            data.con.view(*data.con_shape).data.cpu().detach().numpy(),
-            data.reference_makespan,
         )
         rcpsp_model = build_rcpsp_model(t2t, dur, r2t, rc)[0]
 
@@ -126,6 +124,9 @@ def execute_schedule(bench_id, data):
                 makespans[f"Scenario {scn}"][ExecutionModeNames[execution_mode]][
                     "timing"
                 ] = (perf_counter() - timer)
+                makespans[f"Scenario {scn}"][ExecutionModeNames[execution_mode]][
+                    "schedule"
+                ] = executed_schedule
 
         batch_results[f"Benchmark {bench_id}"] = makespans
 

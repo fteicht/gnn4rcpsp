@@ -63,12 +63,11 @@ def solve_with_cpsat(data_list, device, outfile):
 
             print("Solving bench {}/{} ...".format(bench_id, len(data_list) - 1))
 
-            t2t, dur, r2t, rc, con, ref_makespan = (
+            t2t, dur, r2t, rc, ref_makespan = (
                 data.t2t.view(len(data.dur), -1).data.cpu().detach().numpy(),
                 data.dur.data.cpu().detach().numpy(),
                 data.r2t.view(len(data.rc), len(data.dur)).data.cpu().detach().numpy(),
                 data.rc.data.cpu().detach().numpy(),
-                data.con.view(*data.con_shape).data.cpu().detach().numpy(),
                 data.reference_makespan,
             )
 
@@ -194,12 +193,11 @@ def solve_with_discreteoptim(
 
             print("Solving bench {}/{} ...".format(bench_id, len(data_list) - 1))
 
-            t2t, dur, r2t, rc, con, ref_makespan = (
+            t2t, dur, r2t, rc, ref_makespan = (
                 data.t2t.view(len(data.dur), -1).data.cpu().detach().numpy(),
                 data.dur.data.cpu().detach().numpy(),
                 data.r2t.view(len(data.rc), len(data.dur)).data.cpu().detach().numpy(),
                 data.rc.data.cpu().detach().numpy(),
-                data.con.view(*data.con_shape).data.cpu().detach().numpy(),
                 data.reference_makespan,
             )
             rcpsp_model, _ = build_rcpsp_model(t2t, dur, r2t, rc)
@@ -267,17 +265,16 @@ def solve_with_docplex(data_list, device, outfile: str, time_out=25):
                 self.list_makespan += [max(starts)]
                 self.list_times += [t]
 
-    for batch_idx, data_batch in enumerate(data_loader):
+    for _, data_batch in enumerate(data_loader):
         data_batch.to(device)
         for data in data_batch.to_data_list():
             print("Solving bench {}/{} ...".format(bench_id, len(data_list) - 1))
 
-            t2t, dur, r2t, rc, con, ref_makespan = (
+            t2t, dur, r2t, rc, ref_makespan = (
                 data.t2t.view(len(data.dur), -1).data.cpu().detach().numpy(),
                 data.dur.data.cpu().detach().numpy(),
                 data.r2t.view(len(data.rc), len(data.dur)).data.cpu().detach().numpy(),
                 data.rc.data.cpu().detach().numpy(),
-                data.con.view(*data.con_shape).data.cpu().detach().numpy(),
                 data.reference_makespan,
             )
             mdl = CpoModel()

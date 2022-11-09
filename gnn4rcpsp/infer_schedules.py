@@ -186,12 +186,11 @@ def make_feasible_nlopt(data):
     data_list = data_batch.to_data_list()
     for data in data_list:
 
-        t2t, dur, r2t, rc, con, ref_makespan = (
+        t2t, dur, r2t, rc, ref_makespan = (
             data.t2t.view(len(data.dur), -1).data.cpu().detach().numpy(),
             data.dur.data.cpu().detach().numpy(),
             data.r2t.view(len(data.rc), len(data.dur)).data.cpu().detach().numpy(),
             data.rc.data.cpu().detach().numpy(),
-            data.con.view(*data.con_shape).data.cpu().detach().numpy(),
             data.reference_makespan,
         )
 
@@ -279,12 +278,11 @@ def make_feasible_cpsat(data):
     data_list = data_batch.to_data_list()
     for data in data_list:
 
-        t2t, dur, r2t, rc, con, ref_makespan = (
+        t2t, dur, r2t, rc, ref_makespan = (
             data.t2t.view(len(data.dur), -1).data.cpu().detach().numpy(),
             data.dur.data.cpu().detach().numpy(),
             data.r2t.view(len(data.rc), len(data.dur)).data.cpu().detach().numpy(),
             data.rc.data.cpu().detach().numpy(),
-            data.con.view(*data.con_shape).data.cpu().detach().numpy(),
             data.reference_makespan,
         )
         xorig = np.around(
@@ -464,12 +462,11 @@ def make_feasible_sgs(data, just_dummy_version: bool = False):
     # TODO: vectorize?
     data_list = data_batch.to_data_list()
     for data in data_list:
-        t2t, dur, r2t, rc, con, ref_makespan = (
+        t2t, dur, r2t, rc, ref_makespan = (
             data.t2t.view(len(data.dur), -1).data.cpu().detach().numpy(),
             data.dur.data.cpu().detach().numpy(),
             data.r2t.view(len(data.rc), len(data.dur)).data.cpu().detach().numpy(),
             data.rc.data.cpu().detach().numpy(),
-            data.con.view(*data.con_shape).data.cpu().detach().numpy(),
             data.reference_makespan,
         )
         xorig = np.around(

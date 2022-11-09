@@ -121,22 +121,22 @@ class Graph:
         for r, t, v in r2t:
             _r2t_[r][t - nb_resources] = v
 
-        con = torch.stack(
-            [
-                torch.stack(
-                    [
-                        torch.stack(
-                            [
-                                _r2t_[r][tp] if tp != t else torch.tensor(0.0)
-                                for tp in range(_r2t_.shape[1])
-                            ]
-                        )
-                        for t in range(_r2t_.shape[1])
-                    ]
-                )
-                for r in range(_r2t_.shape[0])
-            ]
-        )
+        # con = torch.stack(
+        #     [
+        #         torch.stack(
+        #             [
+        #                 torch.stack(
+        #                     [
+        #                         _r2t_[r][tp] if tp != t else torch.tensor(0.0)
+        #                         for tp in range(_r2t_.shape[1])
+        #                     ]
+        #                 )
+        #                 for t in range(_r2t_.shape[1])
+        #             ]
+        #         )
+        #         for r in range(_r2t_.shape[0])
+        #     ]
+        # )
 
         # Pytorch Geometric Data
         self._data = Data(
@@ -149,8 +149,8 @@ class Graph:
             rc=torch.tensor(list(rcpsp_model.resources.values()), dtype=torch.float32),
             sources=sources,
             sinks=sinks,
-            con=con.view(-1),
-            con_shape=con.shape,
+            # con=con.view(-1),
+            # con_shape=con.shape,
             reference_makespan=reference_makespan,
             solution_starts=torch.tensor(
                 [v["start_time"] for v in solution.rcpsp_schedule.values()],
