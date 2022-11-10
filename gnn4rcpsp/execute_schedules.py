@@ -19,7 +19,8 @@ from models import ResTransformer
 from torch_geometric.data import DataLoader
 from tqdm import tqdm
 
-NUM_SAMPLES = 30
+NUM_SAMPLES = 15
+num_scenario_per_instance = 2
 
 ExecutionModeNames = {
     ExecutionMode.REACTIVE_AVERAGE: "REACTIVE_AVG",
@@ -69,7 +70,7 @@ def execute_schedule(bench_id, data, result_file):
 
         makespans = defaultdict(lambda: {})
 
-        for scn in tqdm(range(NUM_SAMPLES), desc="Scenario Loop", leave=False):
+        for scn in tqdm(range(num_scenario_per_instance), desc="Scenario Loop", leave=False):
             sample_rcpsp = uncertain_rcpsp.create_rcpsp_model(
                 MethodRobustification(MethodBaseRobustification.SAMPLE)
             )
@@ -77,6 +78,7 @@ def execute_schedule(bench_id, data, result_file):
             for scheduler, execution_mode in tqdm(
                 [
                     (Scheduler.CPSAT, ExecutionMode.REACTIVE_AVERAGE),
+                    (Scheduler.CPSAT, ExecutionMode.HINDSIGHT_LEX),
                     (Scheduler.SGS, ExecutionMode.REACTIVE_AVERAGE),
                     (Scheduler.SGS, ExecutionMode.REACTIVE_WORST),
                     (Scheduler.SGS, ExecutionMode.REACTIVE_BEST),
@@ -115,20 +117,23 @@ def execute_schedule(bench_id, data, result_file):
                         current_time, executed_schedule, stop = executor.progress(
                             next_tasks, next_start, expected_schedule
                         )
+                        print(current_time, expected_makespan)
 
                         makespans[f"Scenario {scn}"][key_in_result][
                             "expectations"
-                        ].append(expected_makespan)
+                        ].append(float(expected_makespan))
 
                     makespans[f"Scenario {scn}"][key_in_result][
                         "executed"
-                    ] = current_time
+                    ] = int(current_time)
                     makespans[f"Scenario {scn}"][key_in_result]["timing"] = (
                         perf_counter() - timer
                     )
                     makespans[f"Scenario {scn}"][key_in_result][
                         "schedule"
-                    ] = executed_schedule.rcpsp_schedule
+                    ] = {t: {k: int(executed_schedule.rcpsp_schedule[t][k])
+                             for k in executed_schedule.rcpsp_schedule[t]}
+                         for t in executed_schedule.rcpsp_schedule}
                     print("Algo, ", key_in_result, " makespan ", current_time)
                 except Exception as e:
                     # Something bad occured...
@@ -137,19 +142,20 @@ def execute_schedule(bench_id, data, result_file):
                     makespans[f"Scenario {scn}"][key_in_result]["timing"] = "Fail"
                     makespans[f"Scenario {scn}"][key_in_result]["schedule"] = "Fail"
 
-        with open(result_file, "r+") as jsonfile:
-            jsonfile.seek(0, os.SEEK_END)
-            jsonfile.seek(jsonfile.tell() - 4, os.SEEK_SET)
-            char = jsonfile.read(1)
-            jsonfile.seek(0, os.SEEK_END)
-            jsonfile.seek(jsonfile.tell() - 3, os.SEEK_SET)
-            if char == "{":  # first bench
-                jsonfile.write("\n")
-            elif char == "}":
-                jsonfile.write(",\n")
-            jsonfile.write(f'"Benchmark {bench_id}": ')
-            json.dump(makespans, jsonfile, indent=2)
-            jsonfile.write("\n}\n")
+        # with open(result_file, "r+") as jsonfile:
+        #     jsonfile.seek(0, os.SEEK_END)
+        #     jsonfile.seek(jsonfile.tell() - 4, os.SEEK_SET)
+        #     char = jsonfile.read(1)
+        #     jsonfile.seek(0, os.SEEK_END)
+        #     jsonfile.seek(jsonfile.tell() - 3, os.SEEK_SET)
+        #     if char == "{":  # first bench
+        #         jsonfile.write("\n")
+        #     elif char == "}":
+        #         jsonfile.write(",\n")
+        #     jsonfile.write(f'"Benchmark {bench_id}": ')
+        #     json.dump(makespans, jsonfile, indent=2)
+        #     jsonfile.write("\n}\n")
+        return makespans
 
 
 def test(test_loader, test_list, model, device, result_file):
@@ -158,9 +164,12 @@ def test(test_loader, test_list, model, device, result_file):
         jsonfile.write("{\n}\n")
 
     # for batch_idx, data in enumerate(tqdm(test_loader)):
+    merged_res = {}
     for batch_idx, data in enumerate(
         tqdm(test_loader, desc="Benchmark Loop", leave=True)
     ):
+        if batch_idx < 3:
+            continue
         data.to(device)
         out = model(data)
         data.out = out
@@ -168,11 +177,17 @@ def test(test_loader, test_list, model, device, result_file):
         data._slice_dict["out"] = data._slice_dict["x"]
         data._inc_dict["out"] = data._inc_dict["x"]
 
-        execute_schedule(
+        ms = execute_schedule(
             test_list[batch_idx],  # batch_size==1 thus batch_idx==test_instance_id
             data,
             result_file,
         )
+        print(batch_idx)
+        merged_res[f"Benchmark {batch_idx}"] = ms
+        run_id = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        json.dump(merged_res,
+                  open("res_with_cp/results_"+run_id+".json", "w"),
+                  indent=4)
 
 
 if __name__ == "__main__":
