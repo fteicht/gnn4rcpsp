@@ -31,8 +31,8 @@ ExecutionModeNames = {
     ExecutionMode.HINDSIGHT_DBP: "HINDSIGHT_DBP",
 }
 
-NUM_SAMPLES = 30
-
+NUM_SAMPLES = 1
+num_scenario_per_instance = 1
 
 def execute_schedule(device, model, bench_id, result_file, data, json_lock):
     data.to(device)
@@ -78,7 +78,7 @@ def execute_schedule(device, model, bench_id, result_file, data, json_lock):
 
         makespans = defaultdict(lambda: {})
 
-        for scn in tqdm(range(NUM_SAMPLES), desc="Scenario Loop", leave=False):
+        for scn in tqdm(range(num_scenario_per_instance), desc="Scenario Loop", leave=False):
             sample_rcpsp = uncertain_rcpsp.create_rcpsp_model(
                 MethodRobustification(MethodBaseRobustification.SAMPLE)
             )
@@ -88,13 +88,14 @@ def execute_schedule(device, model, bench_id, result_file, data, json_lock):
                     (Scheduler.SGS, ExecutionMode.REACTIVE_AVERAGE),
                     (Scheduler.SGS, ExecutionMode.REACTIVE_WORST),
                     (Scheduler.SGS, ExecutionMode.REACTIVE_BEST),
-                    # (Scheduler.CPSAT, ExecutionMode.REACTIVE_AVERAGE),
+                    (Scheduler.CPSAT, ExecutionMode.REACTIVE_AVERAGE),
                     (Scheduler.SGS, ExecutionMode.HINDSIGHT_LEX),
                     (Scheduler.SGS, ExecutionMode.HINDSIGHT_DBP),
                 ],
                 desc="Mode Loop",
                 leave=False,
             ):
+                setup_name = f"{SchedulerNames[scheduler]}-{ExecutionModeNames[execution_mode]}"
                 try:
                     executor = SchedulingExecutor(
                         rcpsp_model,
@@ -106,12 +107,11 @@ def execute_schedule(device, model, bench_id, result_file, data, json_lock):
                         CPSatSpecificParams(
                             do_minimization=True,
                             warm_start_with_gnn=False,
-                            time_limit_seconds=5,
+                            time_limit_seconds=2,
                         )
                         if scheduler == Scheduler.CPSAT
                         else None,
                     )
-                    setup_name = f"{SchedulerNames[scheduler]}-{ExecutionModeNames[execution_mode]}"
                     stop = False
                     executed_schedule, current_time = executor.reset(
                         sim_rcpsp=sample_rcpsp
@@ -132,17 +132,24 @@ def execute_schedule(device, model, bench_id, result_file, data, json_lock):
                         )
 
                         makespans[f"Scenario {scn}"][setup_name]["expectations"].append(
-                            expected_makespan
+                            float(expected_makespan)
                         )
 
-                    makespans[f"Scenario {scn}"][setup_name]["executed"] = current_time
+                    makespans[f"Scenario {scn}"][setup_name]["executed"] = int(current_time)
                     makespans[f"Scenario {scn}"][setup_name]["timing"] = (
                         perf_counter() - timer
                     )
                     makespans[f"Scenario {scn}"][setup_name][
                         "schedule"
-                    ] = executed_schedule.rcpsp_schedule
+                    ] = {t: {k: int(executed_schedule.rcpsp_schedule[t][k])
+                             for k in executed_schedule.rcpsp_schedule[t]}
+                         for t in executed_schedule.rcpsp_schedule}
                 except:
+                    makespans[f"Scenario {scn}"][setup_name]["executed"] = "Fail"
+                    makespans[f"Scenario {scn}"][setup_name]["timing"] = "Fail"
+                    makespans[f"Scenario {scn}"][setup_name][
+                        "schedule"
+                    ] = "Fail"
                     continue
 
         json_lock.acquire()
@@ -170,7 +177,7 @@ def test(test_loader, test_list, model, device, result_file):
     with open(result_file, "w") as jsonfile:
         jsonfile.write("{\n}\n")
 
-    with Pool() as pool:
+    with Pool(ncpus=4) as pool:
         pool.map(
             lambda x: execute_schedule(*x),
             [
