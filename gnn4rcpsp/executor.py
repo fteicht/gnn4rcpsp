@@ -61,7 +61,7 @@ class CPSatSpecificParams:
     @staticmethod
     def default_cp_reactive():
         return CPSatSpecificParams(
-            do_minimization=True, warm_start_with_gnn=False, time_limit_seconds=5
+            do_minimization=True, warm_start_with_gnn=False, time_limit_seconds=2
         )
 
 
@@ -677,10 +677,12 @@ class SchedulingExecutor:
                     np.max(starts_np + np.array(dur, dtype=np.int64)),
                     {t: solution[i] for i, t in enumerate(rcpsp.successors)},
                 )
+            elif status == cp_model.UNKNOWN:
+                return cp_model.INFEASIBLE, 10000000, {}
             else:
                 current_horizon = max(int(1.05 * current_horizon), current_horizon + 1)
 
-        return (status, float("inf"), {})
+        return cp_model.INFEASIBLE, 10000000, {}
 
     def compute_schedule_sgs(self, rcpsp, t2t, dur, r2t, rc, xorig, starts_hint):
         do_model = rcpsp
