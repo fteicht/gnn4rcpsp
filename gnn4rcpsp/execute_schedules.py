@@ -37,7 +37,9 @@ ExecutionModeNames = {
 }
 
 NUM_HINDSIGHT_SAMPLES = 30
-NUM_INSTANCE_SCENARIOS = 10
+NUM_INSTANCE_SCENARIOS = 4
+
+PARALLEL = False
 
 
 def execute_schedule(
@@ -104,11 +106,13 @@ def execute_schedule(
                 setup_name = (
                     f"{SchedulerNames[scheduler]}-{ExecutionModeNames[execution_mode]}"
                 )
-                json_lock.acquire()
+                if PARALLEL:
+                    json_lock.acquire()
                 print(
-                    f"Processing {setup_name} of scenario {scn} of benchmark {bench_id} - overall {float(tests_done.value) / float(nb_tests) * 100.0}%"
+                    f"Processing {setup_name} of scenario {scn} of benchmark {bench_id} - overall {float(tests_done.value if PARALLEL else tests_done) / float(nb_tests) * 100.0}%"
                 )
-                json_lock.release()
+                if PARALLEL:
+                    json_lock.release()
                 try:
                     executor = SchedulingExecutor(
                         rcpsp_model,
@@ -168,9 +172,12 @@ def execute_schedule(
                     print(e)
                     continue
 
-        json_lock.acquire()
-        tests_done.value += 1
-        print(f"Done {tests_done.value} over {nb_tests}")
+        if PARALLEL:
+            json_lock.acquire()
+            tests_done.value += 1
+        else:
+            tests_done += 1
+        print(f"Done {tests_done.value if PARALLEL else tests_done} over {nb_tests}")
         with open(result_file, "r+") as jsonfile:
             jsonfile.seek(0, os.SEEK_END)
             jsonfile.seek(jsonfile.tell() - 4, os.SEEK_SET)
@@ -184,48 +191,109 @@ def execute_schedule(
             jsonfile.write(f'"Benchmark {bench_id}": ')
             json.dump(makespans, jsonfile, indent=2)
             jsonfile.write("\n}\n")
-        json_lock.release()
+        if PARALLEL:
+            json_lock.release()
 
 
 def test(test_loader, test_list, model, device, result_file):
     model.eval()
-    m = Manager()
-    json_lock = m.Lock()
-    tests_done = m.Value("i", 0)
+    if PARALLEL:
+        m = Manager()
+        json_lock = m.Lock()
+        tests_done = m.Value("i", 0)
+    else:
+        tests_done = 0
 
     with open(result_file, "w") as jsonfile:
         jsonfile.write("{\n}\n")
 
-    with Pool(ncpus=10) as pool:
-        pool.map(
-            lambda x: execute_schedule(*x),
-            [
-                (
-                    device,
-                    model,
-                    test_list[
-                        batch_idx
-                    ],  # batch_size==1 thus batch_idx==test_instance_id
-                    tests_done,
-                    len(test_list),
-                    result_file,
-                    data,
-                    json_lock,
-                )
-                for batch_idx, data in enumerate(test_loader)
-            ],
-        )
+    if PARALLEL:
+        with Pool(ncpus=10) as pool:
+            pool.map(
+                lambda x: execute_schedule(*x),
+                [
+                    (
+                        device,
+                        model,
+                        test_list[
+                            batch_idx
+                        ],  # batch_size==1 thus batch_idx==test_instance_id
+                        tests_done,
+                        len(test_list),
+                        result_file,
+                        data,
+                        json_lock,
+                    )
+                    for batch_idx, data in enumerate(test_loader)
+                ],
+            )
+    else:
+        for batch_idx, data in tqdm(
+            enumerate(test_loader), desc="Benchmark Loop", leave=False
+        ):
+            execute_schedule(
+                device,
+                model,
+                test_list[batch_idx],  # batch_size==1 thus batch_idx==test_instance_id
+                tests_done,
+                len(test_list),
+                result_file,
+                data,
+                None,
+            )
 
 
 if __name__ == "__main__":
     data_list = torch.load("../torch_data/data_list.tch")
     train_list = torch.load("../torch_data/train_list.tch")
     test_list = list(set(range(len(data_list))) - set(train_list))
+    filtered_test_list = [
+        1460,
+        509,
+        459,
+        450,
+        514,
+        234,
+        237,
+        391,
+        285,
+        1720,
+        231,
+        69,
+        406,
+        399,
+        1728,
+        1948,
+        1949,
+        502,
+        461,
+        1469,
+        1425,
+        471,
+        464,
+        527,
+        2032,
+        1244,
+        1858,
+        19,
+        1112,
+        303,
+        1556,
+        242,
+        37,
+        66,
+        522,
+        473,
+        1555,
+    ]
+    assert set(filtered_test_list).issubset(set(test_list))
     test_loader = DataLoader(
-        [data_list[d] for d in test_list], batch_size=1, shuffle=False
+        [data_list[d] for d in filtered_test_list], batch_size=1, shuffle=False
     )
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = "cpu"
+    if PARALLEL:
+        device = "cpu"
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     Net = ResTransformer
     # Net = ResGINE
     model = Net().to(device)
@@ -240,7 +308,7 @@ if __name__ == "__main__":
     result_file = f"../hindsight_vs_reactive_{run_id}.json"
     result = test(
         test_loader=test_loader,
-        test_list=test_list,
+        test_list=filtered_test_list,
         model=model,
         device=device,
         result_file=result_file,
