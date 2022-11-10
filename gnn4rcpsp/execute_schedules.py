@@ -32,7 +32,7 @@ ExecutionModeNames = {
     ExecutionMode.HINDSIGHT_DBP: "HINDSIGHT_DBP",
 }
 
-NUM_SAMPLES = 1
+NUM_SAMPLES = 30
 
 
 def execute_schedule(
