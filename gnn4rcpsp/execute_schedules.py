@@ -21,9 +21,10 @@ from infer_schedules import build_rcpsp_model
 from models import ResTransformer
 from tqdm import tqdm
 
-import logging
+from numba.core.errors import NumbaTypeSafetyWarning
+import warnings
 
-logging.disable(logging.WARNING)
+warnings.simplefilter("ignore", category=NumbaTypeSafetyWarning)
 
 SchedulerNames = {Scheduler.SGS: "SGS", Scheduler.CPSAT: "CPSAT"}
 
@@ -103,6 +104,11 @@ def execute_schedule(
                 setup_name = (
                     f"{SchedulerNames[scheduler]}-{ExecutionModeNames[execution_mode]}"
                 )
+                json_lock.acquire()
+                print(
+                    f"Processing {setup_name} of scenario {scn} of benchmark {bench_id} - overall {float(tests_done.value) / float(nb_tests) * 100.0}%"
+                )
+                json_lock.release()
                 try:
                     executor = SchedulingExecutor(
                         rcpsp_model,
