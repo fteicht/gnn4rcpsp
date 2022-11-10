@@ -21,6 +21,10 @@ from infer_schedules import build_rcpsp_model
 from models import ResTransformer
 from tqdm import tqdm
 
+import logging
+
+logging.disable(logging.WARNING)
+
 SchedulerNames = {Scheduler.SGS: "SGS", Scheduler.CPSAT: "CPSAT"}
 
 ExecutionModeNames = {
@@ -34,7 +38,9 @@ ExecutionModeNames = {
 NUM_SAMPLES = 30
 
 
-def execute_schedule(device, model, bench_id, result_file, data, json_lock):
+def execute_schedule(
+    device, model, bench_id, tests_done, nb_tests, result_file, data, json_lock
+):
     data.to(device)
     out = model(data)
     data.out = out
@@ -46,11 +52,7 @@ def execute_schedule(device, model, bench_id, result_file, data, json_lock):
     # Iterate over batch elements for simplicity
     # TODO: vectorize?
     data_list = data_batch.to_data_list()
-    cnt = 0
     for data in data_list:
-        cnt += 1
-        # print(f"Instance {cnt}")
-
         t2t, dur, r2t, rc = (
             data.t2t.view(len(data.dur), -1).data.cpu().detach().numpy(),
             data.dur.data.cpu().detach().numpy(),
@@ -142,10 +144,13 @@ def execute_schedule(device, model, bench_id, result_file, data, json_lock):
                     makespans[f"Scenario {scn}"][setup_name][
                         "schedule"
                     ] = executed_schedule.rcpsp_schedule
-                except:
+                except Exception as e:
+                    print(e)
                     continue
 
         json_lock.acquire()
+        tests_done.value += 1
+        print(f"Done {tests_done.value} over {nb_tests}")
         with open(result_file, "r+") as jsonfile:
             jsonfile.seek(0, os.SEEK_END)
             jsonfile.seek(jsonfile.tell() - 4, os.SEEK_SET)
@@ -166,6 +171,7 @@ def test(test_loader, test_list, model, device, result_file):
     model.eval()
     m = Manager()
     json_lock = m.Lock()
+    tests_done = m.Value("i", 0)
 
     with open(result_file, "w") as jsonfile:
         jsonfile.write("{\n}\n")
@@ -180,6 +186,8 @@ def test(test_loader, test_list, model, device, result_file):
                     test_list[
                         batch_idx
                     ],  # batch_size==1 thus batch_idx==test_instance_id
+                    tests_done,
+                    len(test_list),
                     result_file,
                     data,
                     json_lock,
@@ -196,7 +204,8 @@ if __name__ == "__main__":
     test_loader = DataLoader(
         [data_list[d] for d in test_list], batch_size=1, shuffle=False
     )
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = "cpu"
     Net = ResTransformer
     # Net = ResGINE
     model = Net().to(device)
