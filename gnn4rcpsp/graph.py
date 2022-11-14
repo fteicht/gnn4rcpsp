@@ -1,17 +1,18 @@
 import json
-from matplotlib import pyplot as plt
+import os
+
 import networkx as nx
 import numpy as np
 import pandas as pd
-import os
 import torch
-from torch_geometric.utils import to_networkx
-from torch_geometric.data import Data
-from discrete_optimization.rcpsp.rcpsp_parser import parse_file
 from discrete_optimization.rcpsp.rcpsp_model import RCPSPModel, RCPSPSolution
-# from skdecide.discrete_optimization.rcpsp.parser.rcpsp_parser import parse_file
-
+from discrete_optimization.rcpsp.rcpsp_parser import parse_file
+from matplotlib import pyplot as plt
+from torch_geometric.data import Data
+from torch_geometric.utils import to_networkx
 from tqdm import tqdm
+
+# from skdecide.discrete_optimization.rcpsp.parser.rcpsp_parser import parse_file
 
 
 class Graph:
@@ -80,7 +81,6 @@ class Graph:
                 sinks.append(task_ids[t])
         sinks = np.array(sinks) - nb_resources
         sources = set(task_ids.values()) - successors
-        print("sources : ", sources)
         sources = np.array(list(sources)) - nb_resources
         # Creates pytorch geometric data
         edge_index = torch.tensor(
@@ -194,9 +194,7 @@ class Graph:
         # We assume resource nodes to appear before task nodes in the nodes ordering
         resource_ids = {rcpsp_model.resources_list[i]: i for i in range(nb_resources)}
         tasks_list = rcpsp_model.tasks_list
-        task_ids = {
-            tasks_list[i]: i + len(resource_ids) for i in range(nb_tasks)
-        }
+        task_ids = {tasks_list[i]: i + len(resource_ids) for i in range(nb_tasks)}
 
         # List resource -> task, consumption edges
         r2t = []
@@ -227,8 +225,6 @@ class Graph:
                 sinks.append(task_ids[t])
         sinks = np.array(sinks) - nb_resources
         sources = set(task_ids.values()) - successors
-        print("sources : ", sources)
-        print("sinks : ", sinks)
         sources = np.array(list(sources)) - nb_resources
 
         # Creates pytorch geometric data
@@ -243,7 +239,10 @@ class Graph:
 
         # first 2 are onehot(resource|task), last 2 are (#resources available, task duration)
         node_features = torch.tensor(
-            [[1, 0, rcpsp_model.get_max_resource_capacity(r), 0] for r in rcpsp_model.resources_list]
+            [
+                [1, 0, rcpsp_model.get_max_resource_capacity(r), 0]
+                for r in rcpsp_model.resources_list
+            ]
             + [
                 [0, 1, 0, rcpsp_model.mode_details[t][1]["duration"]]
                 for t in rcpsp_model.tasks_list
@@ -302,7 +301,10 @@ class Graph:
             sinks=sinks,
             reference_makespan=reference_makespan,
             solution_starts=torch.tensor(
-                [solution.rcpsp_schedule[v]["start_time"] for v in rcpsp_model.tasks_list],
+                [
+                    solution.rcpsp_schedule[v]["start_time"]
+                    for v in rcpsp_model.tasks_list
+                ],
                 dtype=torch.float32,
             )
             if solution is not None
