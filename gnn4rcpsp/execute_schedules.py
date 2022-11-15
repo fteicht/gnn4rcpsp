@@ -39,8 +39,8 @@ ExecutionModeNames = {
     ExecutionMode.HINDSIGHT_DBP: "HINDSIGHT_DBP",
 }
 
-NUM_HINDSIGHT_SAMPLES = 20
-NUM_INSTANCE_SCENARIOS = 4
+NUM_HINDSIGHT_SAMPLES = 10
+NUM_INSTANCE_SCENARIOS = 2
 PARALLEL = False
 
 
@@ -94,13 +94,13 @@ def execute_schedule(
             )
 
             for scheduler, execution_mode in tqdm(
-                [
-                    (Scheduler.SGS, ExecutionMode.REACTIVE_AVERAGE),
-                    (Scheduler.SGS, ExecutionMode.REACTIVE_WORST),
-                    (Scheduler.SGS, ExecutionMode.REACTIVE_BEST),
-                    (Scheduler.CPSAT, ExecutionMode.REACTIVE_AVERAGE),
-                    (Scheduler.SGS, ExecutionMode.HINDSIGHT_LEX),
-                    (Scheduler.SGS, ExecutionMode.HINDSIGHT_DBP),
+                [(Scheduler.CPSAT, ExecutionMode.HINDSIGHT_DBP),
+                 (Scheduler.CPSAT, ExecutionMode.REACTIVE_AVERAGE),
+                 (Scheduler.SGS, ExecutionMode.REACTIVE_AVERAGE),
+                 (Scheduler.SGS, ExecutionMode.REACTIVE_WORST),
+                 (Scheduler.SGS, ExecutionMode.REACTIVE_BEST),
+                 (Scheduler.SGS, ExecutionMode.HINDSIGHT_LEX),
+                 (Scheduler.SGS, ExecutionMode.HINDSIGHT_DBP),
                 ],
                 desc="Mode Loop",
                 leave=False,
