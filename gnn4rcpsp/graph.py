@@ -1,15 +1,18 @@
 import json
-from matplotlib import pyplot as plt
+import os
+
 import networkx as nx
 import numpy as np
 import pandas as pd
-import os
 import torch
-from torch_geometric.utils import to_networkx
-from torch_geometric.data import Data
-from discrete_optimization.rcpsp.rcpsp_parser import parse_file
 from discrete_optimization.rcpsp.rcpsp_model import RCPSPModel, RCPSPSolution
+from discrete_optimization.rcpsp.rcpsp_parser import parse_file
+from matplotlib import pyplot as plt
+from torch_geometric.data import Data
+from torch_geometric.utils import to_networkx
 from tqdm import tqdm
+
+# from skdecide.discrete_optimization.rcpsp.parser.rcpsp_parser import parse_file
 
 
 class Graph:
@@ -79,7 +82,6 @@ class Graph:
         sinks = np.array(sinks) - nb_resources
         sources = set(task_ids.values()) - successors
         sources = np.array(list(sources)) - nb_resources
-
         # Creates pytorch geometric data
         edge_index = torch.tensor(
             [
@@ -149,11 +151,160 @@ class Graph:
             rc=torch.tensor(list(rcpsp_model.resources.values()), dtype=torch.float32),
             sources=sources,
             sinks=sinks,
-            # con=con.view(-1),
-            # con_shape=con.shape,
             reference_makespan=reference_makespan,
             solution_starts=torch.tensor(
                 [v["start_time"] for v in solution.rcpsp_schedule.values()],
+                dtype=torch.float32,
+            )
+            if solution is not None
+            else torch.zeros(nb_tasks, dtype=torch.float32),
+            solution_makespan=solution_makespan
+            if solution_makespan is not None
+            else -1,
+        )
+        # self._data.diameter = nx.algorithms.distance_measures.diameter(to_networkx(self._data))
+
+        self._node_labels = [
+            r + "[C={}]".format(c) for r, c in rcpsp_model.resources.items()
+        ] + [
+            "T{}[D={}]".format(t, rcpsp_model.mode_details[t][1]["duration"])
+            for t in rcpsp_model.successors
+        ]
+        self._edge_labels = ["C={}".format(r[2]) for r in r2t] + [
+            "P={}".format(t[2]) for t in t2t
+        ]
+        self._edge_labels = self._edge_labels
+
+        self._vars = (t2t, r2t, rcpsp_model.resources.values(), nb_tasks, nb_resources)
+
+        self.rcpsp_model = rcpsp_model
+
+        return self._data
+
+    def create_from_data_bis(
+        self,
+        rcpsp_model: RCPSPModel,
+        reference_makespan=1,
+        solution: RCPSPSolution = None,
+        solution_makespan=None,
+    ):
+        # Parameters useful to compute the loss
+        nb_tasks, nb_resources = len(rcpsp_model.successors), len(rcpsp_model.resources)
+
+        # We assume resource nodes to appear before task nodes in the nodes ordering
+        resource_ids = {rcpsp_model.resources_list[i]: i for i in range(nb_resources)}
+        tasks_list = rcpsp_model.tasks_list
+        task_ids = {tasks_list[i]: i + len(resource_ids) for i in range(nb_tasks)}
+
+        # List resource -> task, consumption edges
+        r2t = []
+        for t in tasks_list:
+            m = rcpsp_model.mode_details[t]
+            assert len(m) == 1 and 1 in m
+            for k, v in m[1].items():
+                if k != "duration" and v > 0:
+                    r2t.append((resource_ids[k], task_ids[t], v))
+
+        # List task -> task, duration edges
+        t2t = []
+        sources = []
+        sinks = []
+        successors = set()
+        for t, s in rcpsp_model.successors.items():
+            for tt in s:
+                t2t.append(
+                    (
+                        task_ids[t],
+                        task_ids[tt],
+                        rcpsp_model.mode_details[t][1]["duration"]
+                        + 1e-8,  # duration must be strictly positive. TODO: alternatives?
+                    )
+                )
+                successors.add(task_ids[tt])
+            if len(s) == 0:
+                sinks.append(task_ids[t])
+        sinks = np.array(sinks) - nb_resources
+        sources = set(task_ids.values()) - successors
+        sources = np.array(list(sources)) - nb_resources
+
+        # Creates pytorch geometric data
+        edge_index = torch.tensor(
+            [
+                [r[0] for r in r2t] + [t[0] for t in t2t],
+                [t[1] for t in r2t] + [t[1] for t in t2t],
+            ],
+            dtype=torch.long,
+        )
+        edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1)
+
+        # first 2 are onehot(resource|task), last 2 are (#resources available, task duration)
+        node_features = torch.tensor(
+            [
+                [1, 0, rcpsp_model.get_max_resource_capacity(r), 0]
+                for r in rcpsp_model.resources_list
+            ]
+            + [
+                [0, 1, 0, rcpsp_model.mode_details[t][1]["duration"]]
+                for t in rcpsp_model.tasks_list
+            ]
+        )
+
+        # first 4 are onehot(to_successor|to_consumer|to_predecessor|to_provider), last is for #resources
+        edge_features = torch.tensor(
+            [[1, 0, 0, 0, r[2]] for r in r2t]
+            + [[0, 1, 0, 0, 0] for t in t2t]
+            + [[0, 0, 1, 0, r[2]] for r in r2t]
+            + [[0, 0, 0, 1, 0] for t in t2t]
+        )
+
+        _t2t_ = torch.zeros((nb_tasks, nb_tasks), dtype=torch.float32)
+        _dur_ = torch.zeros(nb_tasks, dtype=torch.float32)
+        for (
+            p,
+            t,
+            d,
+        ) in t2t:
+            _t2t_[t - nb_resources][p - nb_resources] = d
+            _dur_[p - nb_resources] = d
+
+        _r2t_ = torch.zeros((nb_resources, nb_tasks), dtype=torch.float32)
+        for r, t, v in r2t:
+            _r2t_[r][t - nb_resources] = v
+
+        # con = torch.stack(
+        #     [
+        #         torch.stack(
+        #             [
+        #                 torch.stack(
+        #                     [
+        #                         _r2t_[r][tp] if tp != t else torch.tensor(0.0)
+        #                         for tp in range(_r2t_.shape[1])
+        #                     ]
+        #                 )
+        #                 for t in range(_r2t_.shape[1])
+        #             ]
+        #         )
+        #         for r in range(_r2t_.shape[0])
+        #     ]
+        # )
+
+        # Pytorch Geometric Data
+        self._data = Data(
+            x=node_features.type(torch.float32),
+            edge_index=edge_index,
+            edge_attr=edge_features.type(torch.float32),
+            t2t=_t2t_.view(-1),  # flatten to enable concatenation in minibatches
+            dur=_dur_,
+            r2t=_r2t_.view(-1),  # transpose to enable concatenation in minibatches
+            rc=torch.tensor(list(rcpsp_model.resources.values()), dtype=torch.float32),
+            sources=sources,
+            sinks=sinks,
+            reference_makespan=reference_makespan,
+            solution_starts=torch.tensor(
+                [
+                    solution.rcpsp_schedule[v]["start_time"]
+                    for v in rcpsp_model.tasks_list
+                ],
                 dtype=torch.float32,
             )
             if solution is not None

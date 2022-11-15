@@ -1,28 +1,31 @@
-from collections import defaultdict
-from datetime import datetime
 import json
 import os
-import torch
-from torch_geometric.data import DataLoader
-from time import perf_counter
-from pathos.multiprocessing import ProcessingPool as Pool
+import warnings
+from collections import defaultdict
+from datetime import datetime
 from multiprocessing import Manager
+from time import perf_counter
 
+import torch
 from discrete_optimization.rcpsp.rcpsp_model import (
     MethodBaseRobustification,
     MethodRobustification,
     UncertainRCPSPModel,
     create_poisson_laws,
 )
-
-from executor import ExecutionMode, Scheduler, SchedulingExecutor, CPSatSpecificParams
+from executor import (
+    CPSatSpecificParams,
+    ExecutionMode,
+    ParamsRemainingRCPSP,
+    Scheduler,
+    SchedulingExecutor,
+)
 from infer_schedules import build_rcpsp_model
-
 from models import ResTransformer
-from tqdm import tqdm
-
 from numba.core.errors import NumbaTypeSafetyWarning
-import warnings
+from pathos.multiprocessing import ProcessingPool as Pool
+from torch_geometric.data import DataLoader
+from tqdm import tqdm
 
 warnings.simplefilter("ignore", category=NumbaTypeSafetyWarning)
 
@@ -36,9 +39,8 @@ ExecutionModeNames = {
     ExecutionMode.HINDSIGHT_DBP: "HINDSIGHT_DBP",
 }
 
-NUM_HINDSIGHT_SAMPLES = 30
-NUM_INSTANCE_SCENARIOS = 4
-
+NUM_HINDSIGHT_SAMPLES = 10
+NUM_INSTANCE_SCENARIOS = 2
 PARALLEL = False
 
 
@@ -68,7 +70,7 @@ def execute_schedule(
         poisson_laws = create_poisson_laws(
             base_rcpsp_model=rcpsp_model,
             range_around_mean_resource=1,
-            range_around_mean_duration=3,
+            range_around_mean_duration=1,
             do_uncertain_resource=False,
             do_uncertain_duration=True,
         )
@@ -92,13 +94,13 @@ def execute_schedule(
             )
 
             for scheduler, execution_mode in tqdm(
-                [
-                    (Scheduler.SGS, ExecutionMode.REACTIVE_AVERAGE),
-                    (Scheduler.SGS, ExecutionMode.REACTIVE_WORST),
-                    (Scheduler.SGS, ExecutionMode.REACTIVE_BEST),
-                    (Scheduler.CPSAT, ExecutionMode.REACTIVE_AVERAGE),
-                    (Scheduler.SGS, ExecutionMode.HINDSIGHT_LEX),
-                    (Scheduler.SGS, ExecutionMode.HINDSIGHT_DBP),
+                [(Scheduler.CPSAT, ExecutionMode.HINDSIGHT_DBP),
+                 (Scheduler.CPSAT, ExecutionMode.REACTIVE_AVERAGE),
+                 (Scheduler.SGS, ExecutionMode.REACTIVE_AVERAGE),
+                 (Scheduler.SGS, ExecutionMode.REACTIVE_WORST),
+                 (Scheduler.SGS, ExecutionMode.REACTIVE_BEST),
+                 (Scheduler.SGS, ExecutionMode.HINDSIGHT_LEX),
+                 (Scheduler.SGS, ExecutionMode.HINDSIGHT_DBP),
                 ],
                 desc="Mode Loop",
                 leave=False,
@@ -124,10 +126,14 @@ def execute_schedule(
                         CPSatSpecificParams(
                             do_minimization=True,
                             warm_start_with_gnn=False,
-                            time_limit_seconds=2,
+                            time_limit_seconds=0.5,
                         )
                         if scheduler == Scheduler.CPSAT
                         else None,
+                        params_remaining_rcpsp=ParamsRemainingRCPSP.KEEP_FULL_RCPSP
+                        if scheduler == Scheduler.SGS
+                        else ParamsRemainingRCPSP.EXACT_REMAINING,
+                        poisson_laws=poisson_laws,
                     )
                     stop = False
                     executed_schedule, current_time = executor.reset(
@@ -147,7 +153,7 @@ def execute_schedule(
                         current_time, executed_schedule, stop = executor.progress(
                             next_tasks, next_start, expected_schedule
                         )
-
+                        print("cur time , ", current_time)
                         makespans[f"Scenario {scn}"][setup_name]["expectations"].append(
                             float(expected_makespan)
                         )
@@ -165,6 +171,7 @@ def execute_schedule(
                         }
                         for t in executed_schedule.rcpsp_schedule
                     }
+                    print("method ", setup_name, " : ", current_time)
                 except Exception as e:
                     makespans[f"Scenario {scn}"][setup_name]["executed"] = "Fail"
                     makespans[f"Scenario {scn}"][setup_name]["timing"] = "Fail"
@@ -247,6 +254,46 @@ if __name__ == "__main__":
     data_list = torch.load("../torch_data/data_list.tch")
     train_list = torch.load("../torch_data/train_list.tch")
     test_list = list(set(range(len(data_list))) - set(train_list))
+    filtered_test_list = [
+        1460,
+        509,
+        459,
+        450,
+        514,
+        234,
+        237,
+        391,
+        285,
+        1720,
+        231,
+        69,
+        406,
+        399,
+        1728,
+        1948,
+        1949,
+        502,
+        461,
+        1469,
+        1425,
+        471,
+        464,
+        527,
+        2032,
+        1244,
+        1858,
+        19,
+        1112,
+        303,
+        1556,
+        242,
+        37,
+        66,
+        522,
+        473,
+        1555,
+    ]
+    filtered_test_list = [1460]
     filtered_test_list = [
         1460,
         509,
