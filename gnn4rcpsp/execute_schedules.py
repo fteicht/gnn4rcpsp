@@ -40,8 +40,8 @@ ExecutionModeNames = {
     ExecutionMode.HINDSIGHT_DBP: "HINDSIGHT_DBP",
 }
 
-NUM_HINDSIGHT_SAMPLES = 30
-NUM_INSTANCE_SCENARIOS = 10
+NUM_HINDSIGHT_SAMPLES = 10
+NUM_INSTANCE_SCENARIOS = 2
 PARALLEL = False
 
 
@@ -307,7 +307,7 @@ if __name__ == "__main__":
     test_loader = DataLoader(
         [data_list[d] for d in filtered_test_list], batch_size=1, shuffle=False
     )
-    if PARALLEL:
+    if PARALLEL or nargs > 1:
         device = "cpu"
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

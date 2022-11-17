@@ -21,7 +21,7 @@ BENCH_ID=0
 for (( POOL = 0 ; POOL < NB_POOLS ; POOL++))
 do
     # echo "POOL: $POOL"
-    for (( PROCESS = 0 ; PROCESS < NB_PROCESSORS - 1 ; PROCESS++ ))
+    for (( PROCESS = 0 ; PROCESS < NB_PROCESSORS - 2 ; PROCESS++ ))
     do
         if [[ $BENCH_ID -lt $NB_BENCHMARKS ]];
         then
@@ -30,7 +30,7 @@ do
             # echo "   BENCH: $BENCH"
             BENCH_ID=$((BENCH_ID + 1))
             python execute_schedules.py $DIRNAME $BENCH &
-            pids[${i}]=$!
+            pids[${PROCESS}]=$!
         fi
     done
     for pid in ${pids[*]}; do
