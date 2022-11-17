@@ -94,13 +94,15 @@ def execute_schedule(
             )
 
             for scheduler, execution_mode in tqdm(
-                [(Scheduler.CPSAT, ExecutionMode.HINDSIGHT_DBP),
-                 (Scheduler.CPSAT, ExecutionMode.REACTIVE_AVERAGE),
-                 (Scheduler.SGS, ExecutionMode.REACTIVE_AVERAGE),
-                 (Scheduler.SGS, ExecutionMode.REACTIVE_WORST),
-                 (Scheduler.SGS, ExecutionMode.REACTIVE_BEST),
-                 (Scheduler.SGS, ExecutionMode.HINDSIGHT_LEX),
-                 (Scheduler.SGS, ExecutionMode.HINDSIGHT_DBP),
+                [
+                    (Scheduler.SGS, ExecutionMode.HINDSIGHT_DBP),
+                    (Scheduler.SGS, ExecutionMode.HINDSIGHT_LEX),
+                    (Scheduler.CPSAT, ExecutionMode.HINDSIGHT_LEX),
+                    (Scheduler.CPSAT, ExecutionMode.HINDSIGHT_DBP),
+                    (Scheduler.CPSAT, ExecutionMode.REACTIVE_AVERAGE),
+                    (Scheduler.SGS, ExecutionMode.REACTIVE_AVERAGE),
+                    (Scheduler.SGS, ExecutionMode.REACTIVE_WORST),
+                    (Scheduler.SGS, ExecutionMode.REACTIVE_BEST),
                 ],
                 desc="Mode Loop",
                 leave=False,
@@ -126,7 +128,9 @@ def execute_schedule(
                         CPSatSpecificParams(
                             do_minimization=True,
                             warm_start_with_gnn=False,
-                            time_limit_seconds=0.5,
+                            time_limit_seconds=0.2
+                            if execution_mode == ExecutionMode.HINDSIGHT_DBP
+                            else 0.5,
                         )
                         if scheduler == Scheduler.CPSAT
                         else None,
@@ -134,6 +138,7 @@ def execute_schedule(
                         if scheduler == Scheduler.SGS
                         else ParamsRemainingRCPSP.EXACT_REMAINING,
                         poisson_laws=poisson_laws,
+                        debug_logs=False,
                     )
                     stop = False
                     executed_schedule, current_time = executor.reset(
@@ -153,7 +158,7 @@ def execute_schedule(
                         current_time, executed_schedule, stop = executor.progress(
                             next_tasks, next_start, expected_schedule
                         )
-                        print("cur time , ", current_time)
+                        # print("cur time , ", current_time)
                         makespans[f"Scenario {scn}"][setup_name]["expectations"].append(
                             float(expected_makespan)
                         )
@@ -172,11 +177,11 @@ def execute_schedule(
                         for t in executed_schedule.rcpsp_schedule
                     }
                     print("method ", setup_name, " : ", current_time)
-                except Exception as e:
+                except:
                     makespans[f"Scenario {scn}"][setup_name]["executed"] = "Fail"
                     makespans[f"Scenario {scn}"][setup_name]["timing"] = "Fail"
                     makespans[f"Scenario {scn}"][setup_name]["schedule"] = "Fail"
-                    print(e)
+                    # print(e)
                     continue
 
         if PARALLEL:
@@ -254,46 +259,6 @@ if __name__ == "__main__":
     data_list = torch.load("../torch_data/data_list.tch")
     train_list = torch.load("../torch_data/train_list.tch")
     test_list = list(set(range(len(data_list))) - set(train_list))
-    filtered_test_list = [
-        1460,
-        509,
-        459,
-        450,
-        514,
-        234,
-        237,
-        391,
-        285,
-        1720,
-        231,
-        69,
-        406,
-        399,
-        1728,
-        1948,
-        1949,
-        502,
-        461,
-        1469,
-        1425,
-        471,
-        464,
-        527,
-        2032,
-        1244,
-        1858,
-        19,
-        1112,
-        303,
-        1556,
-        242,
-        37,
-        66,
-        522,
-        473,
-        1555,
-    ]
-    filtered_test_list = [1460]
     filtered_test_list = [
         1460,
         509,

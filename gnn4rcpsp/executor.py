@@ -4,7 +4,7 @@ from collections import defaultdict, namedtuple
 from copy import deepcopy
 from enum import Enum
 from time import perf_counter
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Dict, Hashable, List, Optional, Set, Tuple, Union
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -513,14 +513,17 @@ class SchedulingExecutor:
                     sampled_rcpsp = rcpsp.create_rcpsp_model(
                         MethodRobustification(MethodBaseRobustification.SAMPLE)
                     )
-
                     scn_starts_hint = deepcopy(starts_hint)
-                    scn_starts_hint.update({t: avg_date_to_start_pre for t in ts})
-
+                    additional_starts = self.simple_compute_earliest_starting_date(
+                        sampled_rcpsp, tasks_to_start=ts, hard_starts=scn_starts_hint
+                    )
+                    if self._debug_logs:
+                        print("add starts", additional_starts)
+                    scn_starts_hint.update(additional_starts)
+                    # scn_starts_hint.update({t: avg_date_to_start_pre for t in ts})
                     status, makespan, feasible_solution = self.compute_schedule(
                         sampled_rcpsp, starts_hint=scn_starts_hint
                     )
-
                     if status == cp_model.INFEASIBLE:
                         continue
                     elif status == cp_model.MODEL_INVALID:
@@ -546,6 +549,114 @@ class SchedulingExecutor:
                         worst_expected_schedule = worst_schedule
 
         return best_tasks, best_next_start, best_makespan, worst_expected_schedule
+
+    def compute_earliest_starting_date(
+        self,
+        sampled_rcpsp: RCPSPModel,
+        tasks_to_start: Set[Hashable],
+        hard_starts: Dict[Hashable, int],
+    ):
+        if sampled_rcpsp.n_jobs == 2:
+            sol = RCPSPSolution(
+                problem=sampled_rcpsp,
+                rcpsp_schedule={
+                    t: {
+                        "start_time": 0,
+                        "end_time": 0 + sampled_rcpsp.mode_details[t][1]["duration"],
+                    }
+                    for t in sampled_rcpsp.tasks_list
+                },
+                rcpsp_modes=[],
+            )
+            return {t: sol.get_start_time(t) for t in tasks_to_start}
+        else:
+            index_to_use = [
+                sampled_rcpsp.index_task_non_dummy[t]
+                for t in sampled_rcpsp.tasks_list_non_dummy
+            ]
+            perm = [
+                sampled_rcpsp.index_task_non_dummy[tt]
+                for tt in hard_starts
+                if tt in sampled_rcpsp.index_task_non_dummy
+            ] + [sampled_rcpsp.index_task_non_dummy[tt] for tt in tasks_to_start]
+            perm += [
+                i
+                for i in index_to_use
+                if i not in hard_starts and i not in tasks_to_start
+            ]
+            sol = RCPSPSolution(
+                problem=sampled_rcpsp,
+                rcpsp_permutation=perm,
+                rcpsp_modes=[1 for i in range(sampled_rcpsp.n_jobs_non_dummy)],
+            )
+            assert sampled_rcpsp.n_jobs > 2
+            if self._params_remaining_rcpsp == ParamsRemainingRCPSP.EXACT_REMAINING:
+                sol.generate_schedule_from_permutation_serial_sgs_2(
+                    current_t=0,
+                    completed_tasks={},
+                    scheduled_tasks_start_times=hard_starts,
+                )
+            if self._params_remaining_rcpsp == ParamsRemainingRCPSP.KEEP_FULL_RCPSP:
+                sol.generate_schedule_from_permutation_serial_sgs_2(
+                    current_t=self._current_time,
+                    completed_tasks={},
+                    scheduled_tasks_start_times=hard_starts,
+                )
+            if self._debug_logs:
+                print("Task to start")
+                print({t: sol.get_start_time(t) for t in tasks_to_start})
+            return {t: sol.get_start_time(t) for t in tasks_to_start}
+
+    def simple_compute_earliest_starting_date(
+        self,
+        sampled_rcpsp: RCPSPModel,
+        tasks_to_start: Set[Hashable],
+        hard_starts: Dict[Hashable, int],
+    ):
+        ressources = {
+            r: sampled_rcpsp.get_resource_availability_array(r)
+            for r in sampled_rcpsp.resources_list
+        }
+        for t in hard_starts:
+            d = sampled_rcpsp.mode_details[t][1]["duration"]
+            if d > 0:
+                for r in sampled_rcpsp.resources_list:
+                    re = sampled_rcpsp.mode_details[t][1][r]
+                    if re > 0:
+                        ressources[r][hard_starts[t] : hard_starts[t] + d] -= re
+        l = list(tasks_to_start)
+        cur_sched = hard_starts
+        for i in range(len(l)):
+            min_dates = [
+                hard_starts[t] + sampled_rcpsp.mode_details[t][1]["duration"]
+                for t in cur_sched
+                if l[i] in sampled_rcpsp.successors[t]
+            ]
+            if len(min_dates) > 0:
+                mindate = max(min_dates)
+            else:
+                mindate = 0
+            if self._params_remaining_rcpsp == ParamsRemainingRCPSP.KEEP_FULL_RCPSP:
+                mindate = max(mindate, self._current_time)
+            dur = sampled_rcpsp.mode_details[l[i]][1]["duration"]
+            if dur == 0:
+                cur_sched[l[i]] = mindate
+                continue
+            good_date = next(
+                t
+                for t in range(mindate, sampled_rcpsp.horizon)
+                if all(
+                    np.min(ressources[r][t : t + dur])
+                    >= sampled_rcpsp.mode_details[l[i]][1][r]
+                    for r in ressources
+                )
+            )
+            cur_sched[l[i]] = good_date
+            for r in sampled_rcpsp.resources_list:
+                re = sampled_rcpsp.mode_details[l[i]][1][r]
+                if re > 0:
+                    ressources[r][cur_sched[l[i]] : cur_sched[l[i]] + dur] -= re
+        return {t: cur_sched[t] for t in tasks_to_start}
 
     def next_tasks_reactive(
         self, rcpsp, running_tasks, executed_schedule: Optional[RCPSPSolution]
@@ -713,7 +824,9 @@ class SchedulingExecutor:
                 model.Minimize(makespan)
             status = solver.Solve(model)
             if self._debug_logs:
-                print(status, cp_model.INFEASIBLE)
+                print(status, "Infeasible - ", cp_model.INFEASIBLE)
+                print(status, "Unknown - ", cp_model.UNKNOWN)
+                print(status, "optimal - ", cp_model.OPTIMAL)
 
             if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
                 solution = [solver.Value(s) for s in starts]
@@ -764,6 +877,11 @@ class SchedulingExecutor:
                 return (cp_model.INFEASIBLE, 10000000, {})
             else:
                 if self._debug_logs:
+                    print("Horizon rcpsp : ", rcpsp.horizon)
+                    print("horizon for cp ", 2 * rcpsp.horizon)
+                    print(rcpsp.successors)
+                    print(rcpsp.mode_details)
+                    print(starts_hint)
                     print("infeasible for some reason...")
                 current_horizon = max(int(1.05 * current_horizon), current_horizon + 1)
 
