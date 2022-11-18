@@ -1,4 +1,5 @@
 import json
+import sys
 import os
 import warnings
 from collections import defaultdict
@@ -39,9 +40,9 @@ ExecutionModeNames = {
     ExecutionMode.HINDSIGHT_DBP: "HINDSIGHT_DBP",
 }
 
-NUM_HINDSIGHT_SAMPLES = 10
-NUM_INSTANCE_SCENARIOS = 2
-PARALLEL = False
+NUM_HINDSIGHT_SAMPLES = 30
+NUM_INSTANCE_SCENARIOS = 10
+PARALLEL = True
 
 
 def execute_schedule(
@@ -131,6 +132,7 @@ def execute_schedule(
                             time_limit_seconds=0.2
                             if execution_mode == ExecutionMode.HINDSIGHT_DBP
                             else 0.5,
+                            num_workers=1 if nargs > 1 or PARALLEL else os.cpu_count(),
                         )
                         if scheduler == Scheduler.CPSAT
                         else None,
@@ -177,11 +179,11 @@ def execute_schedule(
                         for t in executed_schedule.rcpsp_schedule
                     }
                     print("method ", setup_name, " : ", current_time)
-                except:
+                except Exception as e:
                     makespans[f"Scenario {scn}"][setup_name]["executed"] = "Fail"
                     makespans[f"Scenario {scn}"][setup_name]["timing"] = "Fail"
                     makespans[f"Scenario {scn}"][setup_name]["schedule"] = "Fail"
-                    # print(e)
+                    print(e)
                     continue
 
         if PARALLEL:
@@ -220,7 +222,7 @@ def test(test_loader, test_list, model, device, result_file):
         jsonfile.write("{\n}\n")
 
     if PARALLEL:
-        with Pool(ncpus=10) as pool:
+        with Pool() as pool:
             pool.map(
                 lambda x: execute_schedule(*x),
                 [
@@ -256,53 +258,61 @@ def test(test_loader, test_list, model, device, result_file):
 
 
 if __name__ == "__main__":
+    nargs = len(sys.argv)
+    torch.set_num_threads(1 if nargs > 1 or PARALLEL else os.cpu_count())
     data_list = torch.load("../torch_data/data_list.tch")
     train_list = torch.load("../torch_data/train_list.tch")
     test_list = list(set(range(len(data_list))) - set(train_list))
-    filtered_test_list = [
-        1460,
-        509,
-        459,
-        450,
-        514,
-        234,
-        237,
-        391,
-        285,
-        1720,
-        231,
-        69,
-        406,
-        399,
-        1728,
-        1948,
-        1949,
-        502,
-        461,
-        1469,
-        1425,
-        471,
-        464,
-        527,
-        2032,
-        1244,
-        1858,
-        19,
-        1112,
-        303,
-        1556,
-        242,
-        37,
-        66,
-        522,
-        473,
-        1555,
-    ]
+    if nargs > 1:
+        filtered_test_list = [int(a) for i, a in enumerate(sys.argv) if i > 1]
+    else:
+        filtered_test_list = [
+            1460,
+            509,
+            459,
+            450,
+            514,
+            234,
+            237,
+            391,
+            285,
+            1720,
+            231,
+            69,
+            406,
+            399,
+            1728,
+            1948,
+            1949,
+            502,
+            461,
+            1469,
+            1425,
+            471,
+            464,
+            527,
+            2032,
+            1244,
+            1858,
+            19,
+            1112,
+            303,
+            1556,
+            242,
+            37,
+            66,
+            522,
+            473,
+            1555,
+        ]
     assert set(filtered_test_list).issubset(set(test_list))
     test_loader = DataLoader(
-        [data_list[d] for d in filtered_test_list], batch_size=1, shuffle=False
+        [data_list[d] for d in filtered_test_list],
+        batch_size=1,
+        shuffle=False,
+        num_workers=1 if nargs > 1 or PARALLEL else os.cpu_count(),
     )
-    if PARALLEL:
+    if PARALLEL or nargs > 1:
         device = "cpu"
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -317,7 +327,11 @@ if __name__ == "__main__":
     )
     run_id = timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
     print(f"Run ID: {run_id}")
-    result_file = f"../hindsight_vs_reactive_{run_id}.json"
+    result_file = (
+        f"experiments/hindsight_vs_reactive_{run_id}.json"
+        if nargs == 1
+        else f"experiments/{sys.argv[1]}/hindsight_vs_reactive_{run_id}.json"
+    )
     result = test(
         test_loader=test_loader,
         test_list=filtered_test_list,
