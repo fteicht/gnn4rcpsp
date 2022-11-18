@@ -40,9 +40,9 @@ ExecutionModeNames = {
     ExecutionMode.HINDSIGHT_DBP: "HINDSIGHT_DBP",
 }
 
-NUM_HINDSIGHT_SAMPLES = 10
-NUM_INSTANCE_SCENARIOS = 2
-PARALLEL = False
+NUM_HINDSIGHT_SAMPLES = 30
+NUM_INSTANCE_SCENARIOS = 10
+PARALLEL = True
 
 
 def execute_schedule(
@@ -132,7 +132,7 @@ def execute_schedule(
                             time_limit_seconds=0.2
                             if execution_mode == ExecutionMode.HINDSIGHT_DBP
                             else 0.5,
-                            num_workers=1 if nargs > 1 or not PARALLEL else os.cpu_count()
+                            num_workers=1 if nargs > 1 or PARALLEL else os.cpu_count(),
                         )
                         if scheduler == Scheduler.CPSAT
                         else None,
@@ -222,7 +222,7 @@ def test(test_loader, test_list, model, device, result_file):
         jsonfile.write("{\n}\n")
 
     if PARALLEL:
-        with Pool(ncpus=10) as pool:
+        with Pool() as pool:
             pool.map(
                 lambda x: execute_schedule(*x),
                 [
@@ -259,7 +259,7 @@ def test(test_loader, test_list, model, device, result_file):
 
 if __name__ == "__main__":
     nargs = len(sys.argv)
-    torch.set_num_threads(1 if nargs > 1 or not PARALLEL else os.cpu_count())
+    torch.set_num_threads(1 if nargs > 1 or PARALLEL else os.cpu_count())
     data_list = torch.load("../torch_data/data_list.tch")
     train_list = torch.load("../torch_data/train_list.tch")
     test_list = list(set(range(len(data_list))) - set(train_list))
@@ -310,7 +310,7 @@ if __name__ == "__main__":
         [data_list[d] for d in filtered_test_list],
         batch_size=1,
         shuffle=False,
-        num_workers=1 if nargs > 1 or not PARALLEL else os.cpu_count(),
+        num_workers=1 if nargs > 1 or PARALLEL else os.cpu_count(),
     )
     if PARALLEL or nargs > 1:
         device = "cpu"
