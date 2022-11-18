@@ -328,7 +328,7 @@ if __name__ == "__main__":
     run_id = timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
     print(f"Run ID: {run_id}")
     result_file = (
-        f"../hindsight_vs_reactive_{run_id}.json"
+        f"experiments/hindsight_vs_reactive_{run_id}.json"
         if nargs == 1
         else f"experiments/{sys.argv[1]}/hindsight_vs_reactive_{run_id}.json"
     )
