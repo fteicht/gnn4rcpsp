@@ -132,6 +132,7 @@ def execute_schedule(
                             time_limit_seconds=0.2
                             if execution_mode == ExecutionMode.HINDSIGHT_DBP
                             else 0.5,
+                            num_workers=1 if nargs > 1 or not PARALLEL else os.cpu_count()
                         )
                         if scheduler == Scheduler.CPSAT
                         else None,
@@ -257,10 +258,11 @@ def test(test_loader, test_list, model, device, result_file):
 
 
 if __name__ == "__main__":
+    nargs = len(sys.argv)
+    torch.set_num_threads(1 if nargs > 1 or not PARALLEL else os.cpu_count())
     data_list = torch.load("../torch_data/data_list.tch")
     train_list = torch.load("../torch_data/train_list.tch")
     test_list = list(set(range(len(data_list))) - set(train_list))
-    nargs = len(sys.argv)
     if nargs > 1:
         filtered_test_list = [int(a) for i, a in enumerate(sys.argv) if i > 1]
     else:
@@ -305,7 +307,10 @@ if __name__ == "__main__":
         ]
     assert set(filtered_test_list).issubset(set(test_list))
     test_loader = DataLoader(
-        [data_list[d] for d in filtered_test_list], batch_size=1, shuffle=False
+        [data_list[d] for d in filtered_test_list],
+        batch_size=1,
+        shuffle=False,
+        num_workers=1 if nargs > 1 or not PARALLEL else os.cpu_count(),
     )
     if PARALLEL or nargs > 1:
         device = "cpu"

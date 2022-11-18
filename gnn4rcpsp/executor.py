@@ -50,18 +50,25 @@ class CPSatSpecificParams:
     do_minimization: bool
     warm_start_with_gnn: bool
     time_limit_seconds: float
+    num_workers: int
 
     @staticmethod
     def default():
         return CPSatSpecificParams(
-            do_minimization=False, warm_start_with_gnn=True, time_limit_seconds=1
+            do_minimization=False,
+            warm_start_with_gnn=True,
+            time_limit_seconds=1,
+            num_workers=os.cpu_count(),
         )
 
     # good for experimentation
     @staticmethod
     def default_cp_reactive():
         return CPSatSpecificParams(
-            do_minimization=True, warm_start_with_gnn=False, time_limit_seconds=2
+            do_minimization=True,
+            warm_start_with_gnn=False,
+            time_limit_seconds=2,
+            num_workers=os.cpu_count(),
         )
 
 
@@ -803,6 +810,7 @@ class SchedulingExecutor:
 
             # Search for a feasible solution
             solver = cp_model.CpSolver()
+            solver.parameters.num_search_workers = params_cp.num_workers
             solver.parameters.max_time_in_seconds = max(
                 0, CPSAT_TIME_LIMIT - int(perf_counter() - curt)
             )
