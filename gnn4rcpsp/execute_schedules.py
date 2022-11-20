@@ -40,13 +40,22 @@ ExecutionModeNames = {
     ExecutionMode.HINDSIGHT_DBP: "HINDSIGHT_DBP",
 }
 
-NUM_HINDSIGHT_SAMPLES = 30
-NUM_INSTANCE_SCENARIOS = 10
+NUM_HINDSIGHT_SAMPLES = 10
+NUM_INSTANCE_SCENARIOS = 2
+WITH_DEADLINE = True
 PARALLEL = True
 
 
 def execute_schedule(
-    device, model, bench_id, tests_done, nb_tests, result_file, data, json_lock
+    device,
+    model,
+    bench_id,
+    tests_done,
+    nb_tests,
+    result_file,
+    data,
+    with_deadline,
+    json_lock,
 ):
     data.to(device)
     out = model(data)
@@ -85,6 +94,36 @@ def execute_schedule(
             uniform_law=True,
         )
 
+        if with_deadline:
+            # First class to CPSAT average to get the average optimised makespan
+            executor = SchedulingExecutor(
+                rcpsp=rcpsp_model,
+                model=model,
+                device=device,
+                scheduler=Scheduler.CPSAT,
+                mode=ExecutionMode.REACTIVE_AVERAGE,
+                samples=0,
+                deadline=None,
+                params_cp=CPSatSpecificParams(
+                    do_minimization=True,
+                    warm_start_with_gnn=False,
+                    time_limit_seconds=0.5,
+                    num_workers=1 if nargs > 1 or PARALLEL else os.cpu_count(),
+                ),
+                params_remaining_rcpsp=ParamsRemainingRCPSP.EXACT_REMAINING,
+                poisson_laws=poisson_laws,
+                debug_logs=False,
+            )
+            executed_schedule, current_time = executor.reset(sim_rcpsp=rcpsp_model)
+            (
+                _,
+                _,
+                deadline,
+                _,
+            ) = executor.next_tasks(executed_schedule, current_time)
+        else:
+            deadline = None
+
         makespans = defaultdict(lambda: {})
 
         for scn in tqdm(
@@ -120,13 +159,14 @@ def execute_schedule(
                     json_lock.release()
                 try:
                     executor = SchedulingExecutor(
-                        rcpsp_model,
-                        model,
-                        device,
-                        scheduler,
-                        execution_mode,
-                        NUM_HINDSIGHT_SAMPLES,
-                        CPSatSpecificParams(
+                        rcpsp=rcpsp_model,
+                        model=model,
+                        device=device,
+                        scheduler=scheduler,
+                        mode=execution_mode,
+                        samples=NUM_HINDSIGHT_SAMPLES,
+                        deadline=deadline,
+                        params_cp=CPSatSpecificParams(
                             do_minimization=True,
                             warm_start_with_gnn=False,
                             time_limit_seconds=0.2
@@ -171,6 +211,9 @@ def execute_schedule(
                     makespans[f"Scenario {scn}"][setup_name]["timing"] = (
                         perf_counter() - timer
                     )
+                    makespans[f"Scenario {scn}"][setup_name]["deadline"] = (
+                        int(deadline) if with_deadline else "None"
+                    )
                     makespans[f"Scenario {scn}"][setup_name]["schedule"] = {
                         t: {
                             k: int(executed_schedule.rcpsp_schedule[t][k])
@@ -209,7 +252,7 @@ def execute_schedule(
             json_lock.release()
 
 
-def test(test_loader, test_list, model, device, result_file):
+def test(test_loader, test_list, model, device, result_file, with_deadline):
     model.eval()
     if PARALLEL:
         m = Manager()
@@ -236,6 +279,7 @@ def test(test_loader, test_list, model, device, result_file):
                         len(test_list),
                         result_file,
                         data,
+                        with_deadline,
                         json_lock,
                     )
                     for batch_idx, data in enumerate(test_loader)
@@ -253,6 +297,7 @@ def test(test_loader, test_list, model, device, result_file):
                 len(test_list),
                 result_file,
                 data,
+                with_deadline,
                 None,
             )
 
@@ -328,9 +373,9 @@ if __name__ == "__main__":
     run_id = timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
     print(f"Run ID: {run_id}")
     result_file = (
-        f"experiments/hindsight_vs_reactive_{run_id}.json"
+        f"experiments/hindsight_vs_reactive_{'deadline' if WITH_DEADLINE else ''}_{run_id}.json"
         if nargs == 1
-        else f"experiments/{sys.argv[1]}/hindsight_vs_reactive_{run_id}.json"
+        else f"experiments/{sys.argv[1]}/hindsight_vs_reactive_{'deadline' if WITH_DEADLINE else ''}_{run_id}.json"
     )
     result = test(
         test_loader=test_loader,
@@ -338,4 +383,5 @@ if __name__ == "__main__":
         model=model,
         device=device,
         result_file=result_file,
+        with_deadline=WITH_DEADLINE,
     )
