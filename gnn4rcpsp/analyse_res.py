@@ -64,20 +64,20 @@ def analyse(tag_images=""):
     # res_3 = json.load(open("../hindsight_vs_reactive_20221117194608.json", 'r'))
 
     # Small statistics
-    folder_with_results = "/Users/poveda_g/Downloads/execute_schedules_20221118111557/"
-    json_files = [
-        os.path.join(folder_with_results, f)
-        for f in os.listdir(folder_with_results)
-        if "json" in f
-    ]
-    res = {}
-    from functools import reduce
-
-    reduce(lambda x, y: res.update(json.load(open(y, "r"))), json_files)
-    names_scenarios = set([int(x[10:]) for x in res])
-    for j in filtered_test_list:
-        if j not in names_scenarios:
-            print(j, " not here")
+    # folder_with_results = "/Users/poveda_g/Downloads/execute_schedules_20221118111557/"
+    # json_files = [
+    #     os.path.join(folder_with_results, f)
+    #     for f in os.listdir(folder_with_results)
+    #     if "json" in f
+    # ]
+    # res = {}
+    # from functools import reduce
+    #
+    # reduce(lambda x, y: res.update(json.load(open(y, "r"))), json_files)
+    # names_scenarios = set([int(x[10:]) for x in res])
+    # for j in filtered_test_list:
+    #     if j not in names_scenarios:
+    #         print(j, " not here")
 
     res = json.load(
         open(
