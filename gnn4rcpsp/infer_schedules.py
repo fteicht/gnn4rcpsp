@@ -533,6 +533,16 @@ def test(
         data._slice_dict["out"] = data._slice_dict["x"]
         data._inc_dict["out"] = data._inc_dict["x"]
 
+        t2t, dur, r2t, rc, ref_makespan = (
+            data.t2t.view(len(data.dur), -1).data.cpu().detach().numpy(),
+            data.dur.data.cpu().detach().numpy(),
+            data.r2t.view(len(data.rc), len(data.dur)).data.cpu().detach().numpy(),
+            data.rc.data.cpu().detach().numpy(),
+            data.reference_makespan,
+        )
+        xorig = np.around(
+            data.out[len(rc) :, 0].cpu().detach().numpy(), decimals=0
+        ).astype(int)
         loss = compute_loss(data=data, device=device)
         if writer is not None:
             writer.add_scalar("loss", loss.item(), batch_idx)
@@ -565,6 +575,7 @@ def test(
             ],
             "feasibility_abs_makespan": rel_makespan["feasibility_abs_makespan"],
         }
+        batch_result.update({"gnn_inf": [int(x) for x in xorig]})
 
         if SEARCH_FOR_OPTIMALITY:
             batch_result.update(
@@ -584,7 +595,7 @@ def test(
 
         if "schedule" in rel_makespan:
             batch_result.update({"schedule": rel_makespan["schedule"]})
-
+        np.around(data.out[len(rc) :, 0].cpu().detach().numpy(), decimals=0).astype(int)
         result_dict.update({"Benchmark {}".format(batch_idx): batch_result})
 
         if writer is not None:
@@ -600,6 +611,7 @@ def script_gpd():
     data_list = torch.load("../torch_data/data_list.tch")
     train_list = torch.load("../torch_data/train_list.tch")
     test_list = list(set(range(len(data_list))) - set(train_list))
+    test_list = range(len(data_list))
     test_loader = DataLoader(
         [data_list[d] for d in test_list], batch_size=1, shuffle=False
     )
@@ -631,7 +643,7 @@ def script_gpd():
         ),
     )
     with open(
-        f"../cp_solutions/inference_vs_sgspostpro_{run_id}.json", "w"
+        f"../cp_solutions/allinstances_inference_vs_sgspostpro_{run_id}.json", "w"
     ) as jsonfile:
         json.dump(result, jsonfile, indent=2)
     result = test(
@@ -644,7 +656,9 @@ def script_gpd():
             make_feasible_sgs, just_dummy_version=True
         ),
     )
-    with open(f"../cp_solutions/inference_vs_dummysgs_{run_id}.json", "w") as jsonfile:
+    with open(
+        f"../cp_solutions/allinstances_inference_vs_dummysgs_{run_id}.json", "w"
+    ) as jsonfile:
         json.dump(result, jsonfile, indent=2)
 
 
@@ -683,4 +697,4 @@ def script_ftk():
 
 if __name__ == "__main__":
     script_gpd()
-    script_ftk()
+    # script_ftk()
