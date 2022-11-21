@@ -96,7 +96,7 @@ def execute_schedule(
                 params_remaining_rcpsp=ParamsRemainingRCPSP.EXACT_REMAINING,
                 debug_logs=False,
             )
-            executed_schedule, current_time = executor.reset(sim_rcpsp=rcpsp_model)
+            executed_schedule, current_time = executor.reset(sim_rcpsp=uncertain_rcpsp)
             (
                 _,
                 _,
@@ -350,9 +350,9 @@ if __name__ == "__main__":
     run_id = timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
     print(f"Run ID: {run_id}")
     result_file = (
-        f"experiments/hindsight_vs_reactive_{'deadline' if WITH_DEADLINE else ''}_{run_id}.json"
+        f"experiments/hindsight_vs_reactive_markov_{'deadline' if WITH_DEADLINE else ''}_{run_id}.json"
         if nargs == 1
-        else f"experiments/{sys.argv[1]}/hindsight_vs_reactive_{'deadline' if WITH_DEADLINE else ''}_{run_id}.json"
+        else f"experiments/{sys.argv[1]}/hindsight_vs_reactive_markov_{'deadline' if WITH_DEADLINE else ''}_{run_id}.json"
     )
     result = test(
         test_loader=test_loader,
