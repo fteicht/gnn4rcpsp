@@ -8,16 +8,11 @@ from multiprocessing import Manager
 from time import perf_counter
 
 import torch
-from discrete_optimization.rcpsp.rcpsp_model import (
-    MethodBaseRobustification,
-    MethodRobustification,
-    UncertainRCPSPModel,
-    create_poisson_laws,
-)
-from executor import (
+from markov_executor import (
     CPSatSpecificParams,
     ExecutionMode,
     ParamsRemainingRCPSP,
+    MarkovRCPSP,
     Scheduler,
     SchedulingExecutor,
 )
@@ -42,6 +37,7 @@ ExecutionModeNames = {
 
 NUM_HINDSIGHT_SAMPLES = 10
 NUM_INSTANCE_SCENARIOS = 2
+MAX_DEVIATION = 0.8
 WITH_DEADLINE = True
 PARALLEL = True
 
@@ -77,21 +73,8 @@ def execute_schedule(
         )
         rcpsp_model = build_rcpsp_model(t2t, dur, r2t, rc)[0]
 
-        poisson_laws = create_poisson_laws(
-            base_rcpsp_model=rcpsp_model,
-            range_around_mean_resource=1,
-            range_around_mean_duration=1,
-            do_uncertain_resource=False,
-            do_uncertain_duration=True,
-        )
-        uncertain_rcpsp = UncertainRCPSPModel(
-            base_rcpsp_model=rcpsp_model,
-            poisson_laws={
-                task: laws
-                for task, laws in poisson_laws.items()
-                if task in rcpsp_model.mode_details
-            },
-            uniform_law=True,
+        uncertain_rcpsp = MarkovRCPSP(
+            base_rcpsp_model=rcpsp_model, max_deviation=MAX_DEVIATION
         )
 
         if with_deadline:
@@ -111,7 +94,6 @@ def execute_schedule(
                     num_workers=1 if nargs > 1 or PARALLEL else os.cpu_count(),
                 ),
                 params_remaining_rcpsp=ParamsRemainingRCPSP.EXACT_REMAINING,
-                poisson_laws=poisson_laws,
                 debug_logs=False,
             )
             executed_schedule, current_time = executor.reset(sim_rcpsp=rcpsp_model)
@@ -129,10 +111,6 @@ def execute_schedule(
         for scn in tqdm(
             range(NUM_INSTANCE_SCENARIOS), desc="Scenario Loop", leave=False
         ):
-            sample_rcpsp = uncertain_rcpsp.create_rcpsp_model(
-                MethodRobustification(MethodBaseRobustification.SAMPLE)
-            )
-
             for scheduler, execution_mode in tqdm(
                 [
                     (Scheduler.SGS, ExecutionMode.HINDSIGHT_DBP),
@@ -179,12 +157,11 @@ def execute_schedule(
                         params_remaining_rcpsp=ParamsRemainingRCPSP.KEEP_FULL_RCPSP
                         if scheduler == Scheduler.SGS
                         else ParamsRemainingRCPSP.EXACT_REMAINING,
-                        poisson_laws=poisson_laws,
                         debug_logs=False,
                     )
                     stop = False
                     executed_schedule, current_time = executor.reset(
-                        sim_rcpsp=sample_rcpsp
+                        sim_rcpsp=uncertain_rcpsp
                     )
                     makespans[f"Scenario {scn}"][setup_name] = {"expectations": []}
                     timer = perf_counter()

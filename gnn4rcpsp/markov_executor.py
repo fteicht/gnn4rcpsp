@@ -10,6 +10,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from scipy.stats import uniform
 from discrete_optimization.rcpsp.rcpsp_model import (
     MethodBaseRobustification,
     MethodRobustification,
@@ -17,6 +18,7 @@ from discrete_optimization.rcpsp.rcpsp_model import (
     RCPSPSolution,
     UncertainRCPSPModel,
     create_poisson_laws,
+    tree,
 )
 from discrete_optimization.rcpsp.rcpsp_parser import parse_file
 from discrete_optimization.rcpsp.rcpsp_utils import compute_nice_resource_consumption
@@ -28,6 +30,7 @@ from models import ResTransformer
 from ortools.sat.python import cp_model
 
 CPSAT_TIME_LIMIT = 10  # 10 s
+MAX_DEVIATION = 0.8
 
 Rectangle = namedtuple("Rectangle", "xmin ymin xmax ymax")
 
@@ -77,6 +80,191 @@ class ParamsRemainingRCPSP(Enum):
     KEEP_FULL_RCPSP = 1
 
 
+class MarkovRCPSP:
+    def __init__(self, base_rcpsp_model, max_deviation=0.8) -> None:
+        self._base_rcpsp_model = base_rcpsp_model
+        self._max_deviation = max_deviation
+        self._sampled_rcpsps = {}
+
+    def create_uncertain_rcpsp_model(self, launched_tasks: Set, rcpsp: RCPSPModel):
+        assert set(launched_tasks).issubset(set(self._base_rcpsp_model.tasks_list))
+        fet = frozenset(launched_tasks)
+        if fet in self._sampled_rcpsps:
+            poisson_laws = self._sampled_rcpsps[fet]
+        else:
+            # Compute standard deviation of remaining task durations based on the executed or running (aka launched) tasks
+            deviation = uniform.rvs(loc=0, scale=self._max_deviation)
+            # Create UncertainRCPSP with random durations only for the very next lanchable tasks
+            front_tasks = self.get_front_tasks(launched_tasks=launched_tasks)
+            poisson_laws = self.create_poisson_laws(
+                front_tasks,
+                range_per_around_mean_duration=deviation,
+                range_per_around_mean_resource=0,
+                do_uncertain_range_duration=False,
+                do_uncertain_range_resource=False,
+                do_uncertain_duration=True,
+                do_uncertain_resource=False,
+            )
+            self._sampled_rcpsps[fet] = poisson_laws
+        uncertain_rcpsp = UncertainRCPSPModel(
+            base_rcpsp_model=rcpsp,
+            poisson_laws={
+                task: laws
+                for task, laws in poisson_laws.items()
+                if task in rcpsp.mode_details
+            },
+            uniform_law=True,
+        )
+        return uncertain_rcpsp
+
+    def get_front_tasks(self, launched_tasks):
+        if len(launched_tasks) == 0:
+            front_tasks = set()
+            for succ in self._base_rcpsp_model.successors.values():
+                front_tasks = front_tasks | set(succ)
+            front_tasks = set(self._base_rcpsp_model.mode_details.keys()) - front_tasks
+        else:
+            front_tasks = set()
+            for task in launched_tasks:
+                front_tasks = front_tasks | set(self._base_rcpsp_model.successors[task])
+            front_tasks = front_tasks - set(launched_tasks)
+        return front_tasks
+
+    def create_poisson_laws_duration(
+        self, tasks, range_per_around_mean=0.5, do_uncertain_range=True
+    ):
+        poisson_dict = {}
+        source = self._base_rcpsp_model.source_task
+        sink = self._base_rcpsp_model.sink_task
+        for job in self._base_rcpsp_model.mode_details:
+            if job in tasks:
+                poisson_dict[job] = {}
+                for mode in self._base_rcpsp_model.mode_details[job]:
+                    poisson_dict[job][mode] = {}
+                    duration = self._base_rcpsp_model.mode_details[job][mode][
+                        "duration"
+                    ]
+                    if job in {source, sink}:
+                        poisson_dict[job][mode]["duration"] = (
+                            duration,
+                            duration,
+                            duration,
+                        )
+                    else:
+                        rng_per_around_mean = (
+                            uniform.rvs(loc=0, scale=range_per_around_mean)
+                            if do_uncertain_range
+                            else range_per_around_mean
+                        )
+                        min_duration = max(
+                            1, int(round((1.0 - rng_per_around_mean) * duration))
+                        )
+                        max_duration = int(
+                            round((1.0 + rng_per_around_mean) * duration)
+                        )
+                        poisson_dict[job][mode]["duration"] = (
+                            min_duration,
+                            duration,
+                            max_duration,
+                        )
+        return poisson_dict
+
+    def create_poisson_laws_resource(
+        self, tasks, range_per_around_mean=0.5, do_uncertain_range=True
+    ):
+        poisson_dict = {}
+        source = self._base_rcpsp_model.source_task
+        sink = self._base_rcpsp_model.sink_task
+        limit_resource = self._base_rcpsp_model.resources
+        resources_non_renewable = self._base_rcpsp_model.non_renewable_resources
+        for job in self._base_rcpsp_model.mode_details:
+            if job in tasks:
+                poisson_dict[job] = {}
+                for mode in self._base_rcpsp_model.mode_details[job]:
+                    poisson_dict[job][mode] = {}
+                    for resource in self._base_rcpsp_model.mode_details[job][mode]:
+                        if resource == "duration":
+                            continue
+                        if resource in resources_non_renewable:
+                            continue
+                        resource_consumption = self._base_rcpsp_model.mode_details[job][
+                            mode
+                        ][resource]
+                        if job in {source, sink}:
+                            poisson_dict[job][mode][resource] = (
+                                resource_consumption,
+                                resource_consumption,
+                                resource_consumption,
+                            )
+                        else:
+                            rng_per_around_mean = (
+                                uniform.rvs(loc=0, scale=range_per_around_mean)
+                                if do_uncertain_range
+                                else range_per_around_mean
+                            )
+                            min_rc = max(
+                                0,
+                                int(
+                                    round(
+                                        (1.0 - rng_per_around_mean)
+                                        * resource_consumption
+                                    )
+                                ),
+                            )
+                            max_rc = min(
+                                int(
+                                    round(
+                                        (1.0 + rng_per_around_mean)
+                                        * resource_consumption
+                                    )
+                                ),
+                                limit_resource[resource],
+                            )
+                            poisson_dict[job][mode][resource] = (
+                                min_rc,
+                                resource_consumption,
+                                max_rc,
+                            )
+        return poisson_dict
+
+    def create_poisson_laws(
+        self,
+        tasks,
+        range_per_around_mean_resource: float = 0.5,
+        range_per_around_mean_duration: float = 0.5,
+        do_uncertain_range_resource: bool = True,
+        do_uncertain_range_duration: bool = True,
+        do_uncertain_resource: bool = True,
+        do_uncertain_duration: bool = True,
+    ):
+        poisson_laws = tree()
+        if do_uncertain_duration:
+            poisson_laws_duration = self.create_poisson_laws_duration(
+                tasks,
+                range_per_around_mean=range_per_around_mean_duration,
+                do_uncertain_range=do_uncertain_range_duration,
+            )
+            for job in poisson_laws_duration:
+                for mode in poisson_laws_duration[job]:
+                    for res in poisson_laws_duration[job][mode]:
+                        poisson_laws[job][mode][res] = poisson_laws_duration[job][mode][
+                            res
+                        ]
+        if do_uncertain_resource:
+            poisson_laws_resource = self.create_poisson_laws_resource(
+                tasks,
+                range_around_mean=range_per_around_mean_resource,
+                do_uncertain_range=do_uncertain_range_resource,
+            )
+            for job in poisson_laws_resource:
+                for mode in poisson_laws_resource[job]:
+                    for res in poisson_laws_resource[job][mode]:
+                        poisson_laws[job][mode][res] = poisson_laws_resource[job][mode][
+                            res
+                        ]
+        return poisson_laws
+
+
 class SchedulingExecutor:
     def __init__(
         self,
@@ -89,7 +277,6 @@ class SchedulingExecutor:
         deadline: int = None,
         params_cp: Optional[CPSatSpecificParams] = None,
         params_remaining_rcpsp: Optional[ParamsRemainingRCPSP] = None,
-        poisson_laws=None,
         debug_logs=False,
     ):
         self._debug_logs = debug_logs
@@ -98,24 +285,6 @@ class SchedulingExecutor:
         self._device = device
         self._scheduler = scheduler
         self._mode = mode
-        self._poisson_laws = poisson_laws
-        if poisson_laws is None:
-            self._poisson_laws = create_poisson_laws(
-                base_rcpsp_model=self._rcpsp,
-                range_around_mean_resource=1,
-                range_around_mean_duration=8,
-                do_uncertain_resource=False,
-                do_uncertain_duration=True,
-            )
-        self._uncertain_rcpsp = UncertainRCPSPModel(
-            base_rcpsp_model=self._rcpsp,
-            poisson_laws={
-                task: laws
-                for task, laws in self._poisson_laws.items()
-                if task in self._rcpsp.mode_details
-            },
-            uniform_law=True,
-        )
         self._simulated_rcpsp = None
         self._executed_schedule = None
         self._current_time = None
@@ -129,13 +298,13 @@ class SchedulingExecutor:
             self._params_remaining_rcpsp = ParamsRemainingRCPSP.EXACT_REMAINING
 
     def reset(
-        self, sim_rcpsp: Optional[RCPSPModel] = None
+        self, sim_rcpsp: Optional[MarkovRCPSP] = None
     ) -> Tuple[int, RCPSPSolution]:
         """Samples a new RCPSP (uncertain task durations and resource capacities)
         and returns an empty schedule and current time set to 0"""
         if sim_rcpsp is None:
-            self._simulated_rcpsp = self._uncertain_rcpsp.create_rcpsp_model(
-                MethodRobustification(MethodBaseRobustification.SAMPLE)
+            self._simulated_rcpsp = MarkovRCPSP(
+                base_rcpsp_model=self._rcpsp, max_deviation=MAX_DEVIATION
             )
         else:
             self._simulated_rcpsp = sim_rcpsp
@@ -151,7 +320,7 @@ class SchedulingExecutor:
     def progress(
         self, next_tasks: Set[int], next_start: int, expected_schedule: RCPSPSolution
     ) -> Tuple[int, RCPSPSolution, bool]:
-        """Takes the next task to execute, their starting date and the expected schedule,
+        """Takes the next tasks to execute, their starting date and the expected schedule,
         and returns the new current time and updated executed schedule
         and a boolean indicating whether all the tasks have been scheduled or not"""
 
@@ -166,6 +335,12 @@ class SchedulingExecutor:
                 self._current_time,
             )
         if next_start == self._current_time:
+            sampled_rcpsp = self._simulated_rcpsp.create_uncertain_rcpsp_model(
+                launched_tasks=set(self._executed_schedule.rcpsp_schedule.keys()),
+                rcpsp=self._rcpsp,
+            ).create_rcpsp_model(
+                MethodRobustification(MethodBaseRobustification.SAMPLE)
+            )
             self._executed_schedule.rcpsp_schedule.update(
                 {
                     next_task: {
@@ -174,7 +349,7 @@ class SchedulingExecutor:
                         + int(  # in case the max() below returns a numpy type
                             max(
                                 mode["duration"]
-                                for mode in self._simulated_rcpsp.mode_details[
+                                for mode in sampled_rcpsp.mode_details[
                                     next_task
                                 ].values()
                             )
@@ -187,7 +362,7 @@ class SchedulingExecutor:
             for task in next_tasks:
                 self._executed_schedule.problem.mode_details[
                     task
-                ] = self._simulated_rcpsp.mode_details[task]
+                ] = sampled_rcpsp.mode_details[task]
                 self._executed_schedule.problem.update_functions()
         # Compute the next event, i.e. smallest executed task ending date or expected task starting date
         filtered_starts = [
@@ -227,14 +402,12 @@ class SchedulingExecutor:
         running_tasks = set()
         remaining_rcpsp = None
         executed_rcpsp = None
-        task_samplable = set()
         if self._params_remaining_rcpsp == ParamsRemainingRCPSP.EXACT_REMAINING:
             (
                 executed_rcpsp,
                 remaining_rcpsp,
                 running_tasks,
             ) = self.compute_remaining_rcpsp(current_time, executed_schedule)
-            task_samplable = list(remaining_rcpsp.mode_details)
         if self._params_remaining_rcpsp == ParamsRemainingRCPSP.KEEP_FULL_RCPSP:
             running_tasks = set(
                 task
@@ -244,20 +417,10 @@ class SchedulingExecutor:
             )
             executed_rcpsp = executed_schedule.problem
             remaining_rcpsp = executed_rcpsp
-            task_samplable = [
-                t
-                for t in remaining_rcpsp.mode_details
-                if t not in executed_schedule.rcpsp_schedule
-            ]
 
-        rcpsp = UncertainRCPSPModel(
-            base_rcpsp_model=remaining_rcpsp,
-            poisson_laws={
-                task: laws
-                for task, laws in self._poisson_laws.items()
-                if task in task_samplable
-            },
-            uniform_law=True,
+        rcpsp = self._simulated_rcpsp.create_uncertain_rcpsp_model(
+            launched_tasks=set(executed_schedule.rcpsp_schedule.keys()) | running_tasks,
+            rcpsp=remaining_rcpsp,
         )
         # print("initialisation rcpsp, ", perf_counter()-tt)
         best_tasks = None
@@ -1228,8 +1391,8 @@ if __name__ == "__main__":
         rcpsp=rcpsp,
         model=model,
         device=device,
-        scheduler=Scheduler.CPSAT,
-        mode=ExecutionMode.REACTIVE_AVERAGE,
+        scheduler=Scheduler.SGS,
+        mode=ExecutionMode.HINDSIGHT_DBP,
         samples=10,
         deadline=None,
         params_cp=CPSatSpecificParams.default_cp_reactive(),
