@@ -101,6 +101,7 @@ class StochasticRCPSPModel:
         ended_tasks: Dict[int, int],
         running_tasks: Dict[int, int],
         method_robustification: MethodRobustification,
+        params_remaining_rcpsp: ParamsRemainingRCPSP,
         model: RCPSPModel = None,
     ):
         if model is None:
@@ -226,6 +227,10 @@ class StochasticRCPSPModel:
                             model.mode_details[activity][mode][detail] = int(
                                 round(rv.rvs(size=1)[0] + max(0, a - shift))
                             )
+                    if params_remaining_rcpsp == ParamsRemainingRCPSP.KEEP_FULL_RCPSP:
+                        model.mode_details[activity][mode][detail] = (
+                            model.mode_details[activity][mode][detail] + shift
+                        )
         return model
 
 
@@ -277,6 +282,7 @@ class SchedulingExecutor:
             self._simulated_rcpsp = self._uncertain_rcpsp.update_rcpsp_model(
                 ended_tasks={},
                 running_tasks={},
+                params_remaining_rcpsp=self._params_remaining_rcpsp,
                 method_robustification=MethodRobustification(
                     MethodBaseRobustification.SAMPLE
                 ),
@@ -573,6 +579,7 @@ class SchedulingExecutor:
                     for rt, drt in executed_schedule.rcpsp_schedule.items()
                     if drt["end_time"] > current_time
                 },
+                params_remaining_rcpsp=self._params_remaining_rcpsp,
                 method_robustification=MethodRobustification(
                     MethodBaseRobustification.SAMPLE
                 ),
@@ -706,6 +713,7 @@ class SchedulingExecutor:
                             for rt, drt in executed_schedule.rcpsp_schedule.items()
                             if drt["end_time"] > current_time
                         },
+                        params_remaining_rcpsp=self._params_remaining_rcpsp,
                         method_robustification=MethodRobustification(
                             MethodBaseRobustification.SAMPLE
                         ),
@@ -892,6 +900,7 @@ class SchedulingExecutor:
                     for rt, drt in executed_schedule.rcpsp_schedule.items()
                     if drt["end_time"] > current_time
                 },
+                params_remaining_rcpsp=self._params_remaining_rcpsp,
                 method_robustification=MethodRobustification(
                     MethodBaseRobustification.AVERAGE
                 ),
@@ -908,6 +917,7 @@ class SchedulingExecutor:
                     for rt, drt in executed_schedule.rcpsp_schedule.items()
                     if drt["end_time"] > current_time
                 },
+                params_remaining_rcpsp=self._params_remaining_rcpsp,
                 method_robustification=MethodRobustification(
                     MethodBaseRobustification.WORST_CASE
                 ),
@@ -924,6 +934,7 @@ class SchedulingExecutor:
                     for rt, drt in executed_schedule.rcpsp_schedule.items()
                     if drt["end_time"] > current_time
                 },
+                params_remaining_rcpsp=self._params_remaining_rcpsp,
                 method_robustification=MethodRobustification(
                     MethodBaseRobustification.BEST_CASE
                 ),

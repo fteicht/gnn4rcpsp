@@ -130,6 +130,7 @@ def execute_schedule(
             sample_rcpsp = uncertain_rcpsp.update_rcpsp_model(
                 ended_tasks={},
                 running_tasks={},
+                params_remaining_rcpsp=ParamsRemainingRCPSP.KEEP_FULL_RCPSP,
                 method_robustification=MethodRobustification(
                     MethodBaseRobustification.SAMPLE
                 ),
