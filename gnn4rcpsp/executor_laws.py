@@ -4,7 +4,7 @@ import os
 from collections import defaultdict, namedtuple
 from copy import deepcopy
 from enum import Enum
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Dict, Hashable, List, Optional, Set, Tuple, Union
 
 import matplotlib
@@ -554,12 +554,12 @@ class SchedulingExecutor:
         executed_schedule: Optional[RCPSPSolution],
         current_time: int,
     ):
-        starts_hint = {}
+        hard_starts = {}
         if self._params_remaining_rcpsp == ParamsRemainingRCPSP.EXACT_REMAINING:
-            starts_hint = {"source": 0}
-            starts_hint.update({task: 0 for task in running_tasks})
+            hard_starts = {"source": 0}
+            hard_starts.update({task: 0 for task in running_tasks})
         if self._params_remaining_rcpsp == ParamsRemainingRCPSP.KEEP_FULL_RCPSP:
-            starts_hint = {
+            hard_starts = {
                 t: executed_schedule.get_start_time(t)
                 for t in executed_schedule.rcpsp_schedule
             }
@@ -572,12 +572,14 @@ class SchedulingExecutor:
                 ended_tasks={
                     et: det["end_time"] - det["start_time"]
                     for et, det in executed_schedule.rcpsp_schedule.items()
-                    if det["end_time"] <= current_time
+                    if det["start_time"] <= current_time
+                    and det["end_time"] <= current_time
                 },
                 running_tasks={
                     rt: current_time - drt["start_time"]
                     for rt, drt in executed_schedule.rcpsp_schedule.items()
-                    if drt["end_time"] > current_time
+                    if drt["start_time"] <= current_time
+                    and drt["end_time"] > current_time
                 },
                 params_remaining_rcpsp=self._params_remaining_rcpsp,
                 method_robustification=MethodRobustification(
@@ -586,7 +588,10 @@ class SchedulingExecutor:
                 model=sampled_rcpsp,
             )
             status, makespan, feasible_solution = self.compute_schedule(
-                sampled_rcpsp, starts_hint=starts_hint, current_time=current_time
+                sampled_rcpsp,
+                hard_starts=hard_starts,
+                earliest_starts=None,
+                current_time=current_time,
             )
             if status == cp_model.INFEASIBLE:
                 continue
@@ -619,6 +624,11 @@ class SchedulingExecutor:
             )
 
         if len(scenarios) == 0:
+            if self._debug_logs:
+                print(f"hard_starts: {hard_starts}")
+                print(f"successors: {sampled_rcpsp.successors}")
+                print(f"mode details: {sampled_rcpsp.mode_details}")
+            sleep(30)
             raise RuntimeError("No feasible scenario")
 
         shift = (
@@ -706,12 +716,14 @@ class SchedulingExecutor:
                         ended_tasks={
                             et: det["end_time"] - det["start_time"]
                             for et, det in executed_schedule.rcpsp_schedule.items()
-                            if det["end_time"] <= current_time
+                            if det["start_time"] <= current_time
+                            and det["end_time"] <= current_time
                         },
                         running_tasks={
                             rt: current_time - drt["start_time"]
                             for rt, drt in executed_schedule.rcpsp_schedule.items()
-                            if drt["end_time"] > current_time
+                            if drt["start_time"] <= current_time
+                            and drt["end_time"] > current_time
                         },
                         params_remaining_rcpsp=self._params_remaining_rcpsp,
                         method_robustification=MethodRobustification(
@@ -719,17 +731,10 @@ class SchedulingExecutor:
                         ),
                         model=sampled_rcpsp,
                     )
-                    scn_starts_hint = deepcopy(starts_hint)
-                    additional_starts = self.simple_compute_earliest_starting_date(
-                        sampled_rcpsp, tasks_to_start=ts, hard_starts=scn_starts_hint
-                    )
-                    if self._debug_logs:
-                        print("add starts", additional_starts)
-                    scn_starts_hint.update(additional_starts)
-                    # scn_starts_hint.update({t: avg_date_to_start_pre for t in ts})
                     status, makespan, feasible_solution = self.compute_schedule(
                         sampled_rcpsp,
-                        starts_hint=scn_starts_hint,
+                        hard_starts=hard_starts,
+                        earliest_starts=ts,
                         current_time=current_time,
                     )
                     if status == cp_model.INFEASIBLE:
@@ -893,12 +898,14 @@ class SchedulingExecutor:
                 ended_tasks={
                     et: det["end_time"] - det["start_time"]
                     for et, det in executed_schedule.rcpsp_schedule.items()
-                    if det["end_time"] <= current_time
+                    if det["start_time"] <= current_time
+                    and det["end_time"] <= current_time
                 },
                 running_tasks={
                     rt: current_time - drt["start_time"]
                     for rt, drt in executed_schedule.rcpsp_schedule.items()
-                    if drt["end_time"] > current_time
+                    if drt["start_time"] <= current_time
+                    and drt["end_time"] > current_time
                 },
                 params_remaining_rcpsp=self._params_remaining_rcpsp,
                 method_robustification=MethodRobustification(
@@ -910,12 +917,14 @@ class SchedulingExecutor:
                 ended_tasks={
                     et: det["end_time"] - det["start_time"]
                     for et, det in executed_schedule.rcpsp_schedule.items()
-                    if det["end_time"] <= current_time
+                    if det["start_time"] <= current_time
+                    and det["end_time"] <= current_time
                 },
                 running_tasks={
                     rt: current_time - drt["start_time"]
                     for rt, drt in executed_schedule.rcpsp_schedule.items()
-                    if drt["end_time"] > current_time
+                    if drt["start_time"] <= current_time
+                    and drt["end_time"] > current_time
                 },
                 params_remaining_rcpsp=self._params_remaining_rcpsp,
                 method_robustification=MethodRobustification(
@@ -927,30 +936,35 @@ class SchedulingExecutor:
                 ended_tasks={
                     et: det["end_time"] - det["start_time"]
                     for et, det in executed_schedule.rcpsp_schedule.items()
-                    if det["end_time"] <= current_time
+                    if det["start_time"] <= current_time
+                    and det["end_time"] <= current_time
                 },
                 running_tasks={
                     rt: current_time - drt["start_time"]
                     for rt, drt in executed_schedule.rcpsp_schedule.items()
-                    if drt["end_time"] > current_time
+                    if drt["start_time"] <= current_time
+                    and drt["end_time"] > current_time
                 },
                 params_remaining_rcpsp=self._params_remaining_rcpsp,
                 method_robustification=MethodRobustification(
                     MethodBaseRobustification.BEST_CASE
                 ),
             )
-        starts_hint = {}
+        hard_starts = {}
         if self._params_remaining_rcpsp == ParamsRemainingRCPSP.EXACT_REMAINING:
-            starts_hint = {"source": 0}
-            starts_hint.update({task: 0 for task in running_tasks})
+            hard_starts = {"source": 0}
+            hard_starts.update({task: 0 for task in running_tasks})
         if self._params_remaining_rcpsp == ParamsRemainingRCPSP.KEEP_FULL_RCPSP:
-            starts_hint = {
+            hard_starts = {
                 t: executed_schedule.get_start_time(t)
                 for t in executed_schedule.rcpsp_schedule
             }
 
         status, makespan, feasible_solution = self.compute_schedule(
-            reactive_rcpsp, starts_hint=starts_hint, current_time=current_time
+            reactive_rcpsp,
+            hard_starts=hard_starts,
+            earliest_starts=None,
+            current_time=current_time,
         )
 
         if status == cp_model.INFEASIBLE:
@@ -982,10 +996,11 @@ class SchedulingExecutor:
     def compute_schedule(
         self,
         rcpsp: RCPSPModel,
-        starts_hint: Dict[int, int] = None,
+        hard_starts: Dict[int, int] = None,
+        earliest_starts: Set[int] = None,
         current_time: int = 0,
     ) -> Tuple[int, int, List[int]]:
-        data = Graph().create_from_data(rcpsp)
+        data = Graph().create_from_data_bis(rcpsp)
         data.to(self._device)
         out = self._model(data)
         data.out = out
@@ -1010,13 +1025,22 @@ class SchedulingExecutor:
                 r2t,
                 rc,
                 xorig,
-                starts_hint,
+                hard_starts,
+                earliest_starts,
                 current_time,
                 params_cp=self._params_cp,
             )
         elif self._scheduler == Scheduler.SGS:
             return self.compute_schedule_sgs(
-                rcpsp, t2t, dur, r2t, rc, xorig, starts_hint, current_time
+                rcpsp,
+                t2t,
+                dur,
+                r2t,
+                rc,
+                xorig,
+                hard_starts,
+                earliest_starts,
+                current_time,
             )
 
     def compute_schedule_cpsat(
@@ -1027,7 +1051,8 @@ class SchedulingExecutor:
         r2t,
         rc,
         xorig,
-        starts_hint,
+        hard_starts,
+        earliest_starts,
         current_time,
         params_cp: CPSatSpecificParams,
     ):
@@ -1067,14 +1092,21 @@ class SchedulingExecutor:
 
             model.AddMaxEquality(makespan, ends)
 
-            if starts_hint is not None:
+            if hard_starts is not None:
                 constrained_starts = {
-                    i: model.NewConstant(starts_hint[t])
-                    for i, t in enumerate(rcpsp.successors)
-                    if t in starts_hint
+                    i: model.NewConstant(hard_starts[t])
+                    for i, t in enumerate(rcpsp.tasks_list)
+                    if t in hard_starts
                 }
                 for task_idx, start_constant in constrained_starts.items():
                     model.Add(starts[task_idx] == start_constant)
+
+            if earliest_starts is not None:
+                for i, t in enumerate(rcpsp.tasks_list):
+                    if t in earliest_starts:
+                        for ii, tt in enumerate(rcpsp.tasks_list):
+                            if tt not in hard_starts:
+                                model.Add(starts[i] <= starts[ii])
 
             # Search for a feasible solution
             solver = cp_model.CpSolver()
@@ -1092,7 +1124,7 @@ class SchedulingExecutor:
             xorig_list = [x - shift for x in xorig_list]
             if params_cp.warm_start_with_gnn:
                 for i, x in enumerate(xorig_list):
-                    if starts_hint is None or i not in starts_hint:
+                    if hard_starts is None or i not in hard_starts:
                         model.AddHint(starts[i], x)
             # model._CpModel__model.solution_hint.vars.extend(list(range(len(dur))))
             # model._CpModel__model.solution_hint.values.extend(xorig.tolist())
@@ -1149,7 +1181,7 @@ class SchedulingExecutor:
                     status,
                     # solver.Value(makespan),
                     np.max(starts_np + np.array(dur, dtype=np.int64)),
-                    {t: solution[i] for i, t in enumerate(rcpsp.successors)},
+                    {t: solution[i] for i, t in enumerate(rcpsp.tasks_list)},
                 )
             elif phase == "P1" and self._deadline is not None:
                 continue
@@ -1159,14 +1191,23 @@ class SchedulingExecutor:
                     print("horizon for cp ", 2 * rcpsp.horizon)
                     print(rcpsp.successors)
                     print(rcpsp.mode_details)
-                    print(starts_hint)
+                    print(hard_starts)
                     print("infeasible for some reason...")
                     break
 
         return (cp_model.INFEASIBLE, 10000000, {})
 
     def compute_schedule_sgs(
-        self, rcpsp, t2t, dur, r2t, rc, xorig, starts_hint, current_time
+        self,
+        rcpsp,
+        t2t,
+        dur,
+        r2t,
+        rc,
+        xorig,
+        hard_starts,
+        earliest_starts,
+        current_time,
     ):
         do_model = rcpsp
         sorted_index = np.argsort(xorig)
@@ -1195,17 +1236,26 @@ class SchedulingExecutor:
                 rcpsp_modes=[1 for i in range(len(perm))],
             )
             assert do_model.n_jobs > 2
+            scn_hard_starts = deepcopy(hard_starts)
+            if earliest_starts is not None:
+                additional_starts = self.simple_compute_earliest_starting_date(
+                    rcpsp, tasks_to_start=earliest_starts, hard_starts=scn_hard_starts
+                )
+                if self._debug_logs:
+                    print("add starts", additional_starts)
+                scn_hard_starts.update(additional_starts)
+                # scn_hard_starts.update({t: avg_date_to_start_pre for t in ts})
             if self._params_remaining_rcpsp == ParamsRemainingRCPSP.EXACT_REMAINING:
                 sol.generate_schedule_from_permutation_serial_sgs_2(
                     current_t=0,
                     completed_tasks={},
-                    scheduled_tasks_start_times=starts_hint,
+                    scheduled_tasks_start_times=scn_hard_starts,
                 )
             if self._params_remaining_rcpsp == ParamsRemainingRCPSP.KEEP_FULL_RCPSP:
                 sol.generate_schedule_from_permutation_serial_sgs_2(
                     current_t=self._current_time,
                     completed_tasks={},
-                    scheduled_tasks_start_times=starts_hint,
+                    scheduled_tasks_start_times=scn_hard_starts,
                 )
                 # print("cur time", self._current_time)
                 # print("schedule from permutation : ", sol.problem.evaluate(sol))
@@ -1430,13 +1480,14 @@ if __name__ == "__main__":
         rcpsp=rcpsp,
         model=model,
         device=device,
-        scheduler=Scheduler.SGS,
+        scheduler=Scheduler.CPSAT,
         mode=ExecutionMode.HINDSIGHT_DBP,
-        duration_law=DurationLaw.EXPONENTIAL,
+        duration_law=DurationLaw.UNIFORM,
         samples=10,
         deadline=None,
         params_cp=CPSatSpecificParams.default_cp_reactive(),
         params_remaining_rcpsp=ParamsRemainingRCPSP.KEEP_FULL_RCPSP,
+        debug_logs=False,
     )
 
     executed_schedule, current_time = executor.reset()
