@@ -1105,7 +1105,7 @@ class SchedulingExecutor:
                 for i, t in enumerate(rcpsp.tasks_list):
                     if t in earliest_starts:
                         for ii, tt in enumerate(rcpsp.tasks_list):
-                            if tt not in hard_starts:
+                            if tt not in hard_starts and tt not in earliest_starts:
                                 model.Add(starts[i] <= starts[ii])
 
             # Search for a feasible solution
