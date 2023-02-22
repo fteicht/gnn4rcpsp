@@ -130,6 +130,9 @@ class StochasticRCPSPModel:
                     if self._law == DurationLaw.UNIFORM:
                         a = max(0, duration - delta - shift)
                         b = max(0, duration + delta - shift)
+                        if duration > 0:
+                            a = max(a, 1)
+                            b = max(b, 1)
                         rv = uniform(loc=a, scale=b - a)
                         if (
                             method_robustification.method_base
@@ -1134,9 +1137,10 @@ class SchedulingExecutor:
                 model.Minimize(makespan)
             status = solver.Solve(model)
             if self._debug_logs:
-                print(status, "Infeasible - ", cp_model.INFEASIBLE)
-                print(status, "Unknown - ", cp_model.UNKNOWN)
-                print(status, "optimal - ", cp_model.OPTIMAL)
+                pass
+                # print(status, "Infeasible - ", cp_model.INFEASIBLE)
+                # print(status, "Unknown - ", cp_model.UNKNOWN)
+                # print(status, "optimal - ", cp_model.OPTIMAL)
 
             if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
                 solution = [solver.Value(s) for s in starts]
@@ -1193,8 +1197,8 @@ class SchedulingExecutor:
                     print(rcpsp.mode_details)
                     print(hard_starts)
                     print("infeasible for some reason...")
+                    print("Status infeasible ? : ", status == cp_model.INFEASIBLE)
                     break
-
         return (cp_model.INFEASIBLE, 10000000, {})
 
     def compute_schedule_sgs(
