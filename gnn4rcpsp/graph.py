@@ -37,6 +37,7 @@ class Graph:
         reference_makespan=1,
         solution: RCPSPSolution = None,
         solution_makespan=None,
+        bench_name=None,
     ):
         #         print(
         #             "Resources: {},\nSuccessors: {},\n'Mode details: {}".format(
@@ -161,6 +162,7 @@ class Graph:
             solution_makespan=solution_makespan
             if solution_makespan is not None
             else -1,
+            bench_name=bench_name if bench_name is not None else "",
         )
         # self._data.diameter = nx.algorithms.distance_measures.diameter(to_networkx(self._data))
 
@@ -187,6 +189,7 @@ class Graph:
         reference_makespan=1,
         solution: RCPSPSolution = None,
         solution_makespan=None,
+        bench_name=None,
     ):
         # Parameters useful to compute the loss
         nb_tasks, nb_resources = len(rcpsp_model.successors), len(rcpsp_model.resources)
@@ -312,6 +315,7 @@ class Graph:
             solution_makespan=solution_makespan
             if solution_makespan is not None
             else -1,
+            bench_name=bench_name if bench_name is not None else "",
         )
         # self._data.diameter = nx.algorithms.distance_measures.diameter(to_networkx(self._data))
 
@@ -380,6 +384,7 @@ def load_data(kobe_rcpsp_directory, solution_file):
     data_list = []
     rcpsp_model_list = []
     optima_list = []
+    bench_list = []
     with open(solution_file, "r") as sol_file:
         solutions = json.load(sol_file)
     # kobe_rcpsp_path = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'kobe_rcpsp/data/rcpsp'))
@@ -391,7 +396,10 @@ def load_data(kobe_rcpsp_directory, solution_file):
                     index_col="problem",
                 ).T
                 bench_file = os.path.basename(f)
-                if os.path.splitext(bench_file)[1] == ".sm" and bench_file in solutions:
+                if (
+                    os.path.splitext(bench_file)[1] == ".sm"
+                    and os.path.splitext(bench_file)[0] in solutions
+                ):
                     optimum = optima[f]["optimum"]
                     reference_makespan = (
                         [max(map(int, filter(lambda x: x, optimum.split(".."))))]
@@ -402,30 +410,36 @@ def load_data(kobe_rcpsp_directory, solution_file):
                         os.path.join(kobe_rcpsp_directory, d + "/" + f)
                     )
                     g = Graph()
-                    g.create_from_data(
+                    g.create_from_data_bis(
                         rcpsp_model=rcpsp_model,
                         reference_makespan=reference_makespan,
                         solution=RCPSPSolution(
                             rcpsp_model,
                             rcpsp_schedule={
                                 int(t): s
-                                for t, s in solutions[bench_file]["sol"][
-                                    "rcpsp_schedule"
-                                ].items()
+                                for t, s in solutions[os.path.splitext(bench_file)[0]][
+                                    "sol"
+                                ]["rcpsp_schedule"].items()
                             },
                         ),
-                        solution_makespan=solutions[bench_file]["fit"]["makespan"],
+                        solution_makespan=solutions[os.path.splitext(bench_file)[0]][
+                            "fit"
+                        ]["makespan"],
+                        bench_name=os.path.splitext(bench_file)[0],
                     )
                     data_list.append(g._data)
                     rcpsp_model_list.append(g.rcpsp_model)
                     optima_list.append(optimum)
+                    bench_list.append(os.path.splitext(bench_file)[0])
 
     print("Processed {} benchmarks".format(len(data_list)))
     torch.save(data_list, "./data_list.tch")
     torch.save(rcpsp_model_list, "./rcpsp_model_list.tch")
     torch.save(optima_list, "./optima_list.tch")
+    with open("bench_list.json", "w") as f:
+        json.dump(bench_list, f)
 
-    return data_list
+    return data_list, bench_list
 
 
 if __name__ == "__main__":

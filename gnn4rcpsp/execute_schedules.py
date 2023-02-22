@@ -12,7 +12,7 @@ from discrete_optimization.rcpsp.rcpsp_model import (
     MethodBaseRobustification,
     MethodRobustification,
     UncertainRCPSPModel,
-    create_poisson_laws,
+    create_poisson_laws_per,
 )
 from executor import (
     CPSatSpecificParams,
@@ -42,7 +42,7 @@ ExecutionModeNames = {
 
 NUM_HINDSIGHT_SAMPLES = 10
 NUM_INSTANCE_SCENARIOS = 2
-WITH_DEADLINE = True
+WITH_DEADLINE = False
 PARALLEL = True
 
 
@@ -77,10 +77,12 @@ def execute_schedule(
         )
         rcpsp_model = build_rcpsp_model(t2t, dur, r2t, rc)[0]
 
-        poisson_laws = create_poisson_laws(
+        poisson_laws = create_poisson_laws_per(
             base_rcpsp_model=rcpsp_model,
-            range_around_mean_resource=1,
-            range_around_mean_duration=1,
+            range_per_around_mean_resource=0.5,
+            range_per_around_mean_duration=0.5,
+            do_uncertain_range_resource=False,
+            do_uncertain_range_duration=True,
             do_uncertain_resource=False,
             do_uncertain_duration=True,
         )

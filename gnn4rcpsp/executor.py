@@ -16,7 +16,7 @@ from discrete_optimization.rcpsp.rcpsp_model import (
     RCPSPModel,
     RCPSPSolution,
     UncertainRCPSPModel,
-    create_poisson_laws,
+    create_poisson_laws_per,
 )
 from discrete_optimization.rcpsp.rcpsp_parser import parse_file
 from discrete_optimization.rcpsp.rcpsp_utils import compute_nice_resource_consumption
@@ -100,10 +100,12 @@ class SchedulingExecutor:
         self._mode = mode
         self._poisson_laws = poisson_laws
         if poisson_laws is None:
-            self._poisson_laws = create_poisson_laws(
+            self._poisson_laws = create_poisson_laws_per(
                 base_rcpsp_model=self._rcpsp,
-                range_around_mean_resource=1,
-                range_around_mean_duration=8,
+                range_per_around_mean_resource=0.5,
+                range_per_around_mean_duration=0.5,
+                do_uncertain_range_resource=False,
+                do_uncertain_range_duration=True,
                 do_uncertain_resource=False,
                 do_uncertain_duration=True,
             )
