@@ -612,7 +612,9 @@ def script_gpd():
     train_list = torch.load("../torch_data/train_list_sm.tch")
     test_list = list(set(range(len(data_list))) - set(train_list))
     test_loader = DataLoader(
-        [data_list[d] for d in test_list], batch_size=1, shuffle=False
+        [data_list[d] for d in test_list if "j120" in data_list[d].bench_name],
+        batch_size=1,
+        shuffle=False,
     )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     Net = ResTransformer
