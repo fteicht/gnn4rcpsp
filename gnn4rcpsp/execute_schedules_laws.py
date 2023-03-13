@@ -169,6 +169,7 @@ def execute_schedule(
                         scheduler=scheduler,
                         mode=execution_mode,
                         duration_law=duration_law,
+                        relative_max_deviation=RELATIVE_MAX_DEVIATION,
                         samples=NUM_HINDSIGHT_SAMPLES,
                         deadline=deadline,
                         params_cp=CPSatSpecificParams(
