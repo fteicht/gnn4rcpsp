@@ -609,10 +609,10 @@ def test(
 
 def script_gpd():
     data_list = torch.load("../torch_data/data_list_sm.tch")
-    train_list = torch.load("../torch_data/train_list_sm.tch")
+    train_list = torch.load("../torch_data/train_list_all.tch")
     test_list = list(set(range(len(data_list))) - set(train_list))
     test_loader = DataLoader(
-        [data_list[d] for d in test_list if "j120" in data_list[d].bench_name],
+        [data_list[d] for d in test_list],
         batch_size=1,
         shuffle=False,
     )
@@ -623,7 +623,7 @@ def script_gpd():
     # model.load_state_dict(torch.load('saved_models/ResTransformer-256-50000/model_49900.tch'))
     model.load_state_dict(
         torch.load(
-            "../torch_data/model_ResTransformer_small_medium_256_50000.tch",
+            "../torch_data/model_ResTransformer_all_256_50000.tch",
             map_location=device,
         )
     )

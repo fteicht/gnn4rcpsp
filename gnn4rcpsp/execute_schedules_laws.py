@@ -173,7 +173,7 @@ def execute_schedule(
                         params_cp=CPSatSpecificParams(
                             do_minimization=True,
                             warm_start_with_gnn=False,
-                            time_limit_seconds=5
+                            time_limit_seconds=0.2
                             if execution_mode == ExecutionMode.HINDSIGHT_DBP
                             else 0.5,
                             num_workers=1 if nargs > 1 or PARALLEL else os.cpu_count(),

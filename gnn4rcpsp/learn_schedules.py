@@ -1,4 +1,5 @@
 import random
+import shutil
 import torch
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
@@ -10,6 +11,8 @@ import os
 
 from tqdm import tqdm
 import datetime
+
+from sklearn.model_selection import KFold
 
 from graph import load_data
 from models import ResTransformer, ResGINE
@@ -198,103 +201,170 @@ def check_solution(data):
     return total_violations
 
 
-def train(train_loader, model, optimizer, device, writer):
-    model.train()
-    NUM_EPOCHS = 50000
-    step = 0
-    for epoch in tqdm(range(NUM_EPOCHS)):
-        epoch_violations = {
-            "all_positive_per": [],
-            "all_positive_mag": [],
-            "precedence_per": [],
-            "precedence_mag": [],
-            "resource_per": [],
-            "resource_mag": [],
-            "makespan": [],
-        }
-        COMPUTE_METRICS = True if epoch % 100 == 0 else False
+def reset_weights(m):
+    for layer in m.children():
+        if hasattr(layer, "reset_parameters"):
+            layer.reset_parameters()
 
-        for batch_idx, data in enumerate(
-            tqdm(train_loader, desc=f"Epoch {epoch}/{NUM_EPOCHS}")
-        ):
-            COMPUTE_DEBUG = True if batch_idx == 0 else False
 
-            data.to(device)
-            optimizer.zero_grad()
+def train(
+    data_list, train_list, model, optimizer, device, writer, validation_list=None
+):
+    from infer_schedules import make_feasible_sgs
 
-            if COMPUTE_DEBUG:
-                hooks = []
-                for name, m in model.named_modules():
-                    if type(m) is Sequential:
+    # validation_list is None if we evaluate the current model on folds inlucded in train_list
+    NUM_FOLDS = 5
+    NUM_EPOCHS_PER_FOLD = 10000
+    kfold = KFold(n_splits=NUM_FOLDS, shuffle=True)
+    best_sgs_makespan_ref = float("inf")
+    pbar = tqdm(total=NUM_FOLDS * NUM_EPOCHS_PER_FOLD)
 
-                        def hook(module, input, output, name=name):
-                            # print(output.std().item())
-                            # print(output.std(-1))
-                            # print(name)
-                            writer.add_scalar(f"forward/std/{name}", output.std(), step)
-                            writer.add_histogram(f"forward/{name}", output, step)
+    for kfold_idx, (train_index, test_index) in enumerate(
+        kfold.split(train_list if validation_list is None else validation_list)
+    ):
+        train_index = (
+            list(range(len(train_list))) if validation_list is None else train_index
+        )
+        train_loader = DataLoader(
+            [data_list[train_list[d]] for d in train_index], batch_size=32, shuffle=True
+        )
+        test_list = train_list if validation_list is None else validation_list
+        test_loader = DataLoader(
+            [data_list[test_list[d]] for d in test_index], batch_size=32, shuffle=True
+        )
 
-                        hooks.append(m.register_forward_hook(hook))
-            out = model(data)
-            data.out = out
-            # TODO: is there a cleaner way to do this?
-            data._slice_dict["out"] = data._slice_dict["x"]
-            data._inc_dict["out"] = data._inc_dict["x"]
-            #         data.cpu()
+        reset_weights(model)
+        model.train()
+        step = 0
+        best_sgs_makespan_ref_kfold = float("inf")
 
-            if COMPUTE_DEBUG:
-                for hook in hooks:
-                    hook.remove()
+        for epoch in tqdm(range(NUM_EPOCHS_PER_FOLD)):
+            epoch_violations = {
+                "all_positive_per": [],
+                "all_positive_mag": [],
+                "precedence_per": [],
+                "precedence_mag": [],
+                "resource_per": [],
+                "resource_mag": [],
+                "makespan": [],
+                "sgs_makespan_ref": [],
+            }
 
-            loss = compute_loss(data=data, device=device)
+            COMPUTE_METRICS = True if epoch % 100 == 0 else False
 
-            if COMPUTE_DEBUG:
-                if loss.grad_fn is None:
-                    continue
-                loss.backward(retain_graph=True)
-                for name, p in model.named_parameters():
-                    if p.grad is None:
+            for batch_idx, data in enumerate(train_loader):
+                COMPUTE_DEBUG = True if batch_idx == 0 else False
+
+                data.to(device)
+                optimizer.zero_grad()
+
+                if COMPUTE_DEBUG:
+                    hooks = []
+                    for name, m in model.named_modules():
+                        if type(m) is Sequential:
+
+                            def hook(module, input, output, name=name):
+                                # print(output.std().item())
+                                # print(output.std(-1))
+                                # print(name)
+                                writer.add_scalar(
+                                    f"forward/std/{name}", output.std(), step
+                                )
+                                writer.add_histogram(f"forward/{name}", output, step)
+
+                            hooks.append(m.register_forward_hook(hook))
+                out = model(data)
+                data.out = out
+                # TODO: is there a cleaner way to do this?
+                data._slice_dict["out"] = data._slice_dict["x"]
+                data._inc_dict["out"] = data._inc_dict["x"]
+                #         data.cpu()
+
+                if COMPUTE_DEBUG:
+                    for hook in hooks:
+                        hook.remove()
+
+                loss = compute_loss(data=data, device=device)
+
+                if COMPUTE_DEBUG:
+                    if loss.grad_fn is None:
                         continue
-                    writer.add_scalar(f"grads/std/{name}/loss", p.grad.std(), step)
-                model.zero_grad()
+                    loss.backward(retain_graph=True)
+                    for name, p in model.named_parameters():
+                        if p.grad is None:
+                            continue
+                        writer.add_scalar(f"grads/std/{name}/loss", p.grad.std(), step)
+                    model.zero_grad()
 
-            loss.backward()
-            optimizer.step()
-            step += 1
+                loss.backward()
+                optimizer.step()
+                step += 1
 
-            writer.add_scalar("loss", loss.item(), step)
+                writer.add_scalar("loss", loss.item(), step)
 
             if COMPUTE_METRICS:
 
-                violations = check_solution(data)
-                for k, v in violations.items():
-                    epoch_violations[k].append(v)
+                for batch_idx, data in enumerate(test_loader):
+                    data.to(device)
+                    out = model(data)
+                    data.out = out
+                    # TODO: is there a cleaner way to do this?
+                    data._slice_dict["out"] = data._slice_dict["x"]
+                    data._inc_dict["out"] = data._inc_dict["x"]
 
-        if COMPUTE_METRICS:
-            for k, v in epoch_violations.items():
-                epoch_violations[k] = np.mean(epoch_violations[k])
-            writer.add_scalar(
-                "all_positive_per", epoch_violations["all_positive_per"], step
-            )
-            writer.add_scalar(
-                "all_positive_mag", epoch_violations["all_positive_mag"], step
-            )
-            writer.add_scalar(
-                "precedence_per", epoch_violations["precedence_per"], step
-            )
-            writer.add_scalar(
-                "precedence_mag", epoch_violations["precedence_mag"], step
-            )
-            writer.add_scalar("resource_per", epoch_violations["resource_per"], step)
-            writer.add_scalar("resource_mag", epoch_violations["resource_mag"], step)
-            writer.add_scalar("makespan", epoch_violations["makespan"], step)
+                    violations = check_solution(data)
+                    sgs_makespan_ref = make_feasible_sgs(data)[
+                        "feasibility_rel_makespan_ref"
+                    ]
+                    violations["sgs_makespan_ref"] = sgs_makespan_ref
 
-            torch.save(
-                model.state_dict(),
-                f"saved_models/ResTransformer-256-50000/model_{epoch}.tch",
-            )
+                    for k, v in violations.items():
+                        epoch_violations[k].append(v)
 
-        writer.flush()
+                for k, v in epoch_violations.items():
+                    epoch_violations[k] = np.mean(epoch_violations[k])
+                writer.add_scalar(
+                    "all_positive_per", epoch_violations["all_positive_per"], step
+                )
+                writer.add_scalar(
+                    "all_positive_mag", epoch_violations["all_positive_mag"], step
+                )
+                writer.add_scalar(
+                    "precedence_per", epoch_violations["precedence_per"], step
+                )
+                writer.add_scalar(
+                    "precedence_mag", epoch_violations["precedence_mag"], step
+                )
+                writer.add_scalar(
+                    "resource_per", epoch_violations["resource_per"], step
+                )
+                writer.add_scalar(
+                    "resource_mag", epoch_violations["resource_mag"], step
+                )
+                writer.add_scalar("makespan", epoch_violations["makespan"], step)
+                writer.add_scalar(
+                    "sgs_makespan_ref", epoch_violations["sgs_makespan_ref"], step
+                )
+
+                if epoch_violations["sgs_makespan_ref"] < best_sgs_makespan_ref_kfold:
+                    best_sgs_makespan_ref_kfold = epoch_violations["sgs_makespan_ref"]
+                    torch.save(
+                        model.state_dict(),
+                        f"saved_models/ResTransformer-256-50000/model_{kfold_idx}_{epoch}.tch",
+                    )
+                if epoch_violations["sgs_makespan_ref"] < best_sgs_makespan_ref:
+                    best_sgs_makespan_ref = epoch_violations["sgs_makespan_ref"]
+                    shutil.copyfile(
+                        f"saved_models/ResTransformer-256-50000/model_{kfold_idx}_{epoch}.tch",
+                        "best_model.tch",
+                    )
+
+            writer.flush()
+            pbar.update(1)
+            pbar.set_description(
+                f"Fold {kfold_idx}/{NUM_FOLDS}; Epoch {epoch}/{NUM_EPOCHS_PER_FOLD}"
+            )
+    pbar.close()
 
 
 if __name__ == "__main__":
@@ -318,20 +388,17 @@ if __name__ == "__main__":
     if os.path.exists(os.path.join(os.path.dirname(file_path), "train_list.tch")):
         train_list = torch.load("train_list.tch")
     else:
-        # train_list = random.sample(range(len(data_list)), int(0.8 * len(data_list)))
-        train_list = []
-        medium_list = []
-        for i, d in enumerate(data_list):
-            if "j30" in d.bench_name or "j60" in d.bench_name:
-                train_list.append(i)
-            elif "j90" in d.bench_name:
-                medium_list.append(i)
-        train_list += random.sample(medium_list, int(0.5 * len(medium_list)))
+        train_list = random.sample(range(len(data_list)), int(0.8 * len(data_list)))
+        # train_list = []
+        # medium_list = []
+        # for i, d in enumerate(data_list):
+        #     if "j30" in d.bench_name or "j60" in d.bench_name:
+        #         train_list.append(i)
+        #     elif "j90" in d.bench_name:
+        #         medium_list.append(i)
+        # train_list += random.sample(medium_list, int(0.5 * len(medium_list)))
         torch.save(train_list, "./train_list.tch")
 
-    train_loader = DataLoader(
-        [data_list[d] for d in train_list], batch_size=32, shuffle=True
-    )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     Net = ResTransformer
     # Net = ResGINE
@@ -346,7 +413,8 @@ if __name__ == "__main__":
     writer = SummaryWriter(f"../tensorboard_logs/{run_id}")
 
     train(
-        train_loader=train_loader,
+        data_list=data_list,
+        train_list=train_list,
         model=model,
         optimizer=optimizer,
         device=device,
