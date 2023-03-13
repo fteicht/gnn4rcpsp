@@ -234,6 +234,7 @@ class StochasticRCPSPModel:
                         model.mode_details[activity][mode][detail] = (
                             model.mode_details[activity][mode][detail] + shift
                         )
+        model.update_functions()
         return model
 
 
@@ -246,6 +247,7 @@ class SchedulingExecutor:
         scheduler: Scheduler,
         mode: ExecutionMode,
         duration_law: DurationLaw,
+        relative_max_deviation: float = RELATIVE_MAX_DEVIATION,
         samples: int = 100,
         deadline: int = None,
         params_cp: Optional[CPSatSpecificParams] = None,
@@ -259,10 +261,11 @@ class SchedulingExecutor:
         self._scheduler = scheduler
         self._mode = mode
         self._duration_law = duration_law
+        self._relative_max_deviation = relative_max_deviation
         self._uncertain_rcpsp = StochasticRCPSPModel(
             base_rcpsp_model=self._rcpsp,
             law=self._duration_law,
-            relative_max_deviation=RELATIVE_MAX_DEVIATION,
+            relative_max_deviation=relative_max_deviation,
         )
         self._simulated_rcpsp = None
         self._executed_schedule = None
@@ -399,7 +402,7 @@ class SchedulingExecutor:
         rcpsp = StochasticRCPSPModel(
             base_rcpsp_model=remaining_rcpsp,
             law=self._duration_law,
-            relative_max_deviation=RELATIVE_MAX_DEVIATION,
+            relative_max_deviation=self._relative_max_deviation,
         )
         # print("initialisation rcpsp, ", perf_counter()-tt)
         best_tasks = None

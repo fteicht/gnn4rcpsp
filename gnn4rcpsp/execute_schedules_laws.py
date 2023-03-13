@@ -101,6 +101,7 @@ def execute_schedule(
                 scheduler=Scheduler.CPSAT,
                 mode=ExecutionMode.REACTIVE_AVERAGE,
                 duration_law=duration_law,
+                relative_max_deviation=RELATIVE_MAX_DEVIATION,
                 samples=0,
                 deadline=None,
                 params_cp=CPSatSpecificParams(
