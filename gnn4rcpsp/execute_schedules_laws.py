@@ -1,6 +1,7 @@
 import json
 import sys
 import os
+os.environ["DO_SKIP_MZN_CHECK"] = "1"
 import warnings
 from collections import defaultdict
 from datetime import datetime
@@ -47,9 +48,9 @@ LawNames = {
 }
 
 DURATION_LAW = DurationLaw.UNIFORM
-NUM_HINDSIGHT_SAMPLES = 30
+NUM_HINDSIGHT_SAMPLES = 10
 NUM_INSTANCE_SCENARIOS = 10
-RELATIVE_MAX_DEVIATION = 0.8
+RELATIVE_MAX_DEVIATION = 0.3
 WITH_DEADLINE = False
 PARALLEL = True
 
@@ -169,6 +170,7 @@ def execute_schedule(
                         scheduler=scheduler,
                         mode=execution_mode,
                         duration_law=duration_law,
+                        relative_max_deviation=RELATIVE_MAX_DEVIATION,
                         samples=NUM_HINDSIGHT_SAMPLES,
                         deadline=deadline,
                         params_cp=CPSatSpecificParams(
@@ -182,6 +184,8 @@ def execute_schedule(
                         if scheduler == Scheduler.CPSAT
                         else None,
                         params_remaining_rcpsp=ParamsRemainingRCPSP.KEEP_FULL_RCPSP,
+                        #if scheduler == Scheduler.SGS
+                        #else ParamsRemainingRCPSP.EXACT_REMAINING,
                         debug_logs=False,
                     )
                     stop = False
@@ -202,7 +206,6 @@ def execute_schedule(
                         current_time, executed_schedule, stop = executor.progress(
                             next_tasks, next_start, expected_schedule
                         )
-                        # print("cur time , ", current_time)
                         makespans[f"Scenario {scn}"][setup_name]["expectations"].append(
                             float(expected_makespan)
                         )
@@ -309,6 +312,7 @@ def test(
 
 
 if __name__ == "__main__":
+    this_folder = os.path.dirname(os.path.abspath(__file__))
     nargs = len(sys.argv)
     torch.set_num_threads(1 if nargs > 1 or PARALLEL else os.cpu_count())
     data_list = torch.load("../torch_data/data_list.tch")

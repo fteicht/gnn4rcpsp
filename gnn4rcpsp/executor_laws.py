@@ -91,10 +91,12 @@ class StochasticRCPSPModel:
         base_rcpsp_model: RCPSPModel,
         law: DurationLaw,
         relative_max_deviation,
+        absolute_deviation: int = 0
     ):
         self._base_rcpsp_model = base_rcpsp_model
         self._law = law
         self._relative_max_deviation = relative_max_deviation
+        self._absolute_deviation = absolute_deviation
 
     def update_rcpsp_model(
         self,
@@ -128,8 +130,8 @@ class StochasticRCPSPModel:
                     shift = running_tasks[activity] if activity in running_tasks else 0
 
                     if self._law == DurationLaw.UNIFORM:
-                        a = max(0, duration - delta - shift)
-                        b = max(0, duration + delta - shift)
+                        a = max(0, min(duration - delta - shift, duration-shift-self._absolute_deviation))
+                        b = max(0, max(duration + delta - shift, duration-shift+self._absolute_deviation))
                         if duration > 0:
                             a = max(a, 1)
                             b = max(b, 1)
@@ -709,7 +711,6 @@ class SchedulingExecutor:
             best_makespan = float("inf")
             best_deadline_prob = float("inf")
             worst_expected_schedule = None
-
             for ts, lmk in scenarios.items():
                 avg_makespan = 0
                 valid_samples = 0
